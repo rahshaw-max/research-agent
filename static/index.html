@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Research Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="header-left">
+      <span class="header-logo">&#9670;</span>
+      <span class="header-title">Research Agent</span>
+    </div>
+    <div class="header-right">Multi-Agent Research &amp; Architecture System</div>
+  </header>
+
+  <!-- Main split layout -->
+  <main>
+    <!-- LEFT PANEL -->
+    <section class="left-panel" id="left-panel">
+
+      <!-- Phase: INPUT -->
+      <div id="phase-input" class="phase active">
+        <h2>What would you like to research?</h2>
+        <p class="hint">Describe any idea, product concept, or technology you want explored.</p>
+        <textarea id="idea-input" placeholder="e.g. AI-powered invoice processing platform for small businesses..." rows="6"></textarea>
+        <button class="btn-primary" onclick="submitIdea()">Research This &rarr;</button>
+        <div id="input-error" class="error-msg hidden"></div>
+      </div>
+
+      <!-- Phase: CLARIFYING -->
+      <div id="phase-clarifying" class="phase hidden">
+        <h2>A few quick questions</h2>
+        <p class="hint">Your answers will sharpen the research focus.</p>
+        <div id="questions-container"></div>
+        <button class="btn-primary" onclick="submitAnswers()">Start Research &rarr;</button>
+        <div id="clarify-error" class="error-msg hidden"></div>
+      </div>
+
+      <!-- Phase: RUNNING -->
+      <div id="phase-running" class="phase hidden">
+        <h2>Research in progress</h2>
+        <div class="idea-summary" id="running-idea-display"></div>
+        <div class="cycle-indicator" id="cycle-indicator">Cycle <span id="cycle-num">1</span> of 3</div>
+        <p class="hint muted">Monitor agent progress on the right. You will be asked to review the critique before the final deck is generated.</p>
+      </div>
+
+      <!-- Phase: REVIEWING (HITL gate) -->
+      <div id="phase-reviewing" class="phase hidden">
+        <div class="review-header">
+          <span class="review-icon">&#9888;</span>
+          <div>
+            <h2>Critique Complete</h2>
+            <span class="cycle-badge" id="review-cycle-badge">Cycle 1 of 3</span>
+          </div>
+        </div>
+
+        <p class="hint">Review the critique below, then choose how to proceed.</p>
+
+        <div class="critique-panel" id="critique-panel"></div>
+
+        <div class="review-divider">Clarifying Questions from Interrogator Agent</div>
+
+        <div id="interrogator-questions-container" class="interrogator-questions"></div>
+
+        <div class="review-divider">What would you like to do?</div>
+
+        <div class="review-actions">
+          <button class="btn-primary btn-approve" onclick="approveReview()">
+            &#10003; Approve &amp; Generate Deck
+          </button>
+          <button class="btn-secondary btn-refine" onclick="toggleRefineForm()">
+            &#9998; Refine &amp; Rerun with Answers
+          </button>
+        </div>
+
+        <div id="refine-form" class="refine-form hidden">
+          <label for="refined-prompt">Additional refined focus (optional)</label>
+          <textarea id="refined-prompt" rows="2" placeholder="e.g. Focus specifically on the European SMB market and GDPR compliance..."></textarea>
+
+          <label for="additional-context">Other constraints (optional)</label>
+          <textarea id="additional-context" rows="2" placeholder="e.g. Budget under $500k, launch target Q2 2027..."></textarea>
+
+          <button class="btn-primary" onclick="submitRefinement()">Submit &amp; Rerun &rarr;</button>
+        </div>
+
+        <p class="cycle-limit-note" id="cycle-limit-note"></p>
+      </div>
+
+      <!-- Phase: DONE -->
+      <div id="phase-done" class="phase hidden">
+        <div class="done-header">
+          <span class="done-icon">&#10004;</span>
+          <h2>Research Complete</h2>
+        </div>
+        <p class="hint">Your PowerPoint deck is ready for download.</p>
+        <a id="download-link" class="btn-download" href="#" download="research_summary.pptx">
+          &#8595; Download Deck (.pptx)
+        </a>
+        <button class="btn-secondary restart-btn" onclick="restart()">Start New Research</button>
+      </div>
+
+      <!-- Global error banner -->
+      <div id="global-error" class="global-error hidden">
+        <strong>Error:</strong> <span id="global-error-msg"></span>
+        <button class="btn-secondary" onclick="restart()" style="margin-top:12px">Start Over</button>
+      </div>
+
+    </section>
+
+    <!-- RIGHT PANEL -->
+    <section class="right-panel" id="right-panel">
+      <div class="right-panel-header">Agent Progress</div>
+
+      <div class="agent-cards" id="agent-cards">
+
+        <!-- Researcher -->
+        <div class="agent-card" id="card-researcher">
+          <div class="card-header">
+            <div class="card-icon icon-researcher">&#128270;</div>
+            <div class="card-meta">
+              <div class="card-title">Research Agent</div>
+              <div class="card-subtitle">Market landscape, use cases, challenges</div>
+            </div>
+            <div class="status-badge status-waiting" id="badge-researcher">Waiting</div>
+          </div>
+          <div class="card-output" id="output-researcher"></div>
+        </div>
+
+        <!-- Architect v1 -->
+        <div class="agent-card" id="card-architect_v1">
+          <div class="card-header">
+            <div class="card-icon icon-architect">&#128736;</div>
+            <div class="card-meta">
+              <div class="card-title">Architect Agent <span class="card-version">v1</span></div>
+              <div class="card-subtitle">Technical architecture design</div>
+            </div>
+            <div class="status-badge status-waiting" id="badge-architect_v1">Waiting</div>
+          </div>
+          <div class="card-output" id="output-architect_v1"></div>
+        </div>
+
+        <!-- Critic -->
+        <div class="agent-card" id="card-critic">
+          <div class="card-header">
+            <div class="card-icon icon-critic">&#128269;</div>
+            <div class="card-meta">
+              <div class="card-title">Critique Agent</div>
+              <div class="card-subtitle">Gaps, risks, and recommendations</div>
+            </div>
+            <div class="status-badge status-waiting" id="badge-critic">Waiting</div>
+          </div>
+          <div class="card-output" id="output-critic"></div>
+        </div>
+
+        <!-- Interrogator -->
+        <div class="agent-card" id="card-interrogator">
+          <div class="card-header">
+            <div class="card-icon icon-interrogator">&#10067;</div>
+            <div class="card-meta">
+              <div class="card-title">Interrogator Agent</div>
+              <div class="card-subtitle">10 clarifying questions from the critique</div>
+            </div>
+            <div class="status-badge status-waiting" id="badge-interrogator">Waiting</div>
+          </div>
+          <div class="card-output" id="output-interrogator"></div>
+        </div>
+
+        <!-- HITL divider -->
+        <div class="hitl-divider" id="hitl-divider">
+          <span>&#9670; Human Review Gate &#9670;</span>
+        </div>
+
+        <!-- Architect v2 -->
+        <div class="agent-card" id="card-architect_v2">
+          <div class="card-header">
+            <div class="card-icon icon-architect">&#9998;</div>
+            <div class="card-meta">
+              <div class="card-title">Architect Agent <span class="card-version">v2</span></div>
+              <div class="card-subtitle">Revised architecture addressing critique</div>
+            </div>
+            <div class="status-badge status-waiting" id="badge-architect_v2">Waiting</div>
+          </div>
+          <div class="card-output" id="output-architect_v2"></div>
+        </div>
+
+        <!-- Auditor -->
+        <div class="agent-card" id="card-auditor">
+          <div class="card-header">
+            <div class="card-icon icon-auditor">&#128196;</div>
+            <div class="card-meta">
+              <div class="card-title">Auditor Agent</div>
+              <div class="card-subtitle">Summarising into PowerPoint deck</div>
+            </div>
+            <div class="status-badge status-waiting" id="badge-auditor">Waiting</div>
+          </div>
+          <div class="card-output" id="output-auditor"></div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
