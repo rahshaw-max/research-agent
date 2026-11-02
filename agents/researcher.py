@@ -1,3 +1,7 @@
+import json
+import os
+from urllib.parse import url parse
+
 import anthropic
 from dotenv import load_dotenv
 
@@ -5,87 +9,192 @@ load_dotenv()
 
 client = anthropic.AsyncAnthropic()
 
-SYSTEM_PROMPT = """You are an expert research analyst. Produce a structured research report using EXACTLY the template below. Follow all length rules — they exist to prevent truncation.
+MAX_SEARCHES = int(os.getenv("MAX_SEARCHES", "8"))
 
-OUTPUT FORMAT (use this exact structure):
+# Server-side tools — API executes them; no client tool-result round-trip needed.
+# web_fetch only works on URLs that appeared in prior context (e.g. search results).
+_TOOLS = [
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": MAX_SEARCHES},
+    {"type": "web_fetch_20250910", "name": "web_fetch",   "max_uses": MAX_SEARCHES},
+]
 
-## Market Landscape
-- [market size / growth rate with specific numbers] (max 20 words)
-- [2-3 dominant players and their positioning] (max 20 words)
-- [maturity stage and trend direction] (max 20 words)
-- [one notable market dynamic or shift] (max 20 words)
+_CITATION_RULES = """
+CITATION RULES (mandatory):
+- Before asserting any number, market size, company name, product name, or trend, run a web_search to verify it.
+- After a search surfaces a relevant page, use web_fetch to read the full page — do not rely on snippets alone.
+- Prefer primary sources: SEC/CMS filings, regulator websites, vendor documentation, peer-reviewed papers.
+- Attach an inline citation [N] to EVERY factual bullet. A single bullet may carry multiple citations.
+- If a claim cannot be verified by search, write "(unverified)" — do not guess or hallucinate.
+- End your entire response with a "## Sources" section listing every cited source as:
+  [N] Title — URL
+  (one line per source, ordered by first appearance)
+"""
 
-## Use Cases
-- [primary use case]: [who benefits and how] (max 20 words each)
-- [secondary use case]: [who benefits and how]
-- [tertiary use case]: [who benefits and how]
-(3–4 use cases total)
+SYSTEM_PROMPT = f"""You are an expert research analyst with live web access. Before writing any fact, search for it.
 
-## Existing Solutions
-- [solution/competitor name]: [what it does, its key gap] (max 25 words each)
-- [solution/competitor name]: [what it does, its key gap]
-- [solution/competitor name]: [what it does, its key gap]
-(3–4 solutions total)
+{_CITATION_RULES}
 
-## Key Challenges
-- [challenge]: [why it matters] (max 20 words each)
-- [challenge]: [why it matters]
-- [challenge]: [why it matters]
-(3–4 challenges total)
-
-## Opportunities
-- [opportunity]: [why now / why underserved] (max 20 words each)
-- [opportunity]: [why now / why underserved]
-- [opportunity]: [why now / why underserved]
-(2–3 opportunities total)
-
-RULES:
-- Use bullet points only — no prose paragraphs
-- Each bullet must be self-contained and specific (name real companies, cite real numbers where possible)
-- Do not add extra sections or commentary outside the template
-- Total output must fit within ~600 words"""
-
-SYSTEM_PROMPT_REVISION = """You are an expert research analyst conducting a targeted follow-up research pass. A previous round of research was critiqued. Produce an improved report using EXACTLY the template below.
-
-OUTPUT FORMAT:
-
-## Critique Gaps Addressed
-- [critique point]: [how this report now resolves it] (max 20 words each)
-(one bullet per critique point raised — be exhaustive)
+Produce a structured research report using EXACTLY this template:
 
 ## Market Landscape
-- [finding] (max 20 words)
-- [finding] (max 20 words)
-- [finding] (max 20 words)
-- [finding] (max 20 words)
+- [finding with inline citation] [N] (max 25 words)
+- [finding] [N]
+- [finding] [N]
+- [finding] [N]
+(3–5 bullets)
 
 ## Use Cases
-- [use case]: [who benefits and how] (max 20 words each)
+- [use case]: [who benefits and how] [N] (max 25 words each)
 (3–4 use cases)
 
 ## Existing Solutions
-- [solution]: [what it does, its key gap] (max 25 words each)
+- **[solution name]**: [what it does, its key gap] [N] (max 30 words)
 (3–4 solutions)
 
 ## Key Challenges
-- [challenge]: [why it matters] (max 20 words each)
+- [challenge]: [why it matters] [N] (max 25 words each)
 (3–4 challenges)
 
 ## Opportunities
-- [opportunity]: [why now / why underserved] (max 20 words each)
+- [opportunity]: [why now / why underserved] [N] (max 25 words each)
 (2–3 opportunities)
 
+## Sources
+[N] Title — URL
+(every source cited above, in order)
+
 RULES:
-- Bullets only — no prose paragraphs
-- The "Critique Gaps Addressed" section must explicitly name and close every gap from the critique
-- Do not repeat information unchanged from the prior round — add new specificity or evidence
-- Total output must fit within ~700 words"""
+- Search first, write second. Never state a number or name without a citation.
+- Bullets only in body sections — no prose paragraphs.
+- Total output (excluding Sources) must fit within ~700 words."""
+
+SYSTEM_PROMPT_REVISION = f"""You are an expert research analyst with live web access conducting a targeted follow-up pass. A critique identified specific gaps in the prior research. Your job is to close those gaps with fresh searches — not to reword existing content.
+
+{_CITATION_RULES}
+
+For each gap named in the critique, run at least one dedicated search targeting that specific claim or question. Do not rely on prior search results.
+
+Produce an improved report using EXACTLY this template:
+
+## Critique Gaps Addressed
+- [critique point] → [how new evidence resolves it] [N] (max 25 words, one bullet per gap)
+
+## Market Landscape
+- [finding] [N] (max 25 words)
+(3–5 bullets)
+
+## Use Cases
+- [use case]: [who benefits and how] [N] (max 25 words each)
+(3–4 use cases)
+
+## Existing Solutions
+- **[solution name]**: [what it does, its key gap] [N] (max 30 words)
+(3–4 solutions)
+
+## Key Challenges
+- [challenge]: [why it matters] [N] (max 25 words each)
+(3–4 challenges)
+
+## Opportunities
+- [opportunity]: [why now / why underserved] [N] (max 25 words each)
+(2–3 opportunities)
+
+## Sources
+[N] Title — URL
+
+RULES:
+- Every bullet in "Critique Gaps Addressed" must cite a freshly fetched source.
+- Do not repeat bullets unchanged from the prior report — add new specificity or evidence.
+- Search first, write second. Mark anything unverifiable as "(unverified)"."""
 
 
 def _format_answers(answers: dict) -> str:
     if not answers:
         return "No additional context provided."
     return "\n".join(f"- {k}: {v}" for k, v in answers.items())
+
+
+async def _stream_with_tools(system: str, user_prompt: str):
+    """
+    Drive a server-tool loop with web_search + web_fetch.
+
+    Yields:
+      str  — text chunk to stream to the caller
+      dict — {"__type__": "status", "message": str}  side-channel status event
+    Handles pause_turn continuation and tool errors without crashing.
+    """
+    messages: list = [{"role": "user", "content": user_prompt}]
+
+    while True:
+        try:
+            async with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=8192,
+                system=system,
+                messages=messages,
+                tools=_TOOLS,
+            ) as stream:
+                current_type: str | None = None
+                current_name: str | None = None
+                partial_input: str = ""
+
+                async for event in stream:
+                    t = event.type
+
+                    if t == "content_block_start":
+                        cb = event.content_block
+                        current_type = getattr(cb, "type", None)
+                        current_name = getattr(cb, "name", None)
+                        partial_input = ""
+
+                    elif t == "content_block_delta":
+                        d = event.delta
+                        dt = getattr(d, "type", None)
+                        if current_type == "server_tool_use" and dt == "input_json_delta":
+                            partial_input += getattr(d, "partial_json", "")
+                        elif current_type == "text" and dt == "text_delta":
+                            text = getattr(d, "text", "")
+                            if text:
+                                yield text
+
+                    elif t == "content_block_stop":
+                        if current_type == "server_tool_use" and partial_input:
+                            try:
+                                inp = json.loads(partial_input)
+                                if current_name == "web_search":
+                                    q = inp.get("query", "")
+                                    if q:
+                                        yield {"__type__": "status", "message": f"searching: {q}"}
+                                elif current_name == "web_fetch":
+                                    u = inp.get("url", "")
+                                    if u:
+                                        domain = urlparse(u).netloc or u[:60]
+                                        yield {"__type__": "status", "message": f"reading: {domain}"}
+                            except Exception:
+                                pass  # malformed partial JSON — ignore
+
+                final = await stream.get_final_message()
+
+                if final.stop_reason != "pause_turn":
+                    break
+
+                # pause_turn: append the assistant turn and continue
+                continuation: list = []
+                for block in final.content:
+                    if hasattr(block, "model_dump"):
+                        continuation.append(block.model_dump())
+                    else:
+                        continuation.append(block)
+                messages = [*messages, {"role": "assistant", "content": continuation}]
+
+        except anthropic.RateLimitError as e:
+            yield {"__type__": "status", "message": f"rate limited — retrying after pause"}
+            import asyncio
+            await asyncio.sleep(5)
+            # retry the same messages
+        except anthropic.APIError as e:
+            yield {"__type__": "status", "message": f"API error (stopping search): {e}"}
+            break
 
 
 async def run(
@@ -96,31 +205,33 @@ async def run(
 ):
     if prev_critique:
         system = SYSTEM_PROMPT_REVISION
-        refinement_text = ""
+
+        refinement_parts = []
         if latest_refinement:
-            parts = []
             if latest_refinement.get("refined_prompt"):
-                parts.append(f"Refined focus: {latest_refinement['refined_prompt']}")
+                refinement_parts.append(f"Refined focus: {latest_refinement['refined_prompt']}")
             if latest_refinement.get("additional_context"):
-                parts.append(f"Additional context: {latest_refinement['additional_context']}")
-            answers = latest_refinement.get("interrogator_answers", {})
-            if answers:
-                parts.append("\nAnswers to clarifying questions:")
-                for question, answer in answers.items():
+                refinement_parts.append(f"Additional context: {latest_refinement['additional_context']}")
+            answers_qa = latest_refinement.get("interrogator_answers", {})
+            if answers_qa:
+                refinement_parts.append("Answers to clarifying questions:")
+                for question, answer in answers_qa.items():
                     if answer and answer.strip():
-                        parts.append(f"  Q: {question}\n  A: {answer}")
-            if parts:
-                refinement_text = "\n\nHuman reviewer's refinement:\n" + "\n".join(parts)
+                        refinement_parts.append(f"  Q: {question}\n  A: {answer}")
+
+        refinement_text = ("\n\nHuman reviewer's refinement:\n" + "\n".join(refinement_parts)
+                           if refinement_parts else "")
 
         user_prompt = f"""Idea: {idea}
 
 Requester context:
 {_format_answers(answers)}{refinement_text}
 
-Previous critique (gaps to resolve):
+Previous critique (gaps to close with fresh research):
 {prev_critique}
 
-Produce the improved structured research report."""
+Produce the improved structured research report. Run new searches for each critique gap."""
+
     else:
         system = SYSTEM_PROMPT
         user_prompt = f"""Idea: {idea}
@@ -128,13 +239,7 @@ Produce the improved structured research report."""
 Requester context:
 {_format_answers(answers)}
 
-Produce the structured research report."""
+Produce the structured research report. Search before asserting any fact."""
 
-    async with client.messages.stream(
-        model="claude-sonnet-4-6",
-        max_tokens=8192,
-        system=system,
-        messages=[{"role": "user", "content": user_prompt}],
-    ) as stream:
-        async for text in stream.text_stream:
-            yield text
+    async for chunk in _stream_with_tools(system, user_prompt):
+        yield chunk

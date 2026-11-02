@@ -125,6 +125,7 @@ function connectWebSocket() {
       case 'agent_start':    handleAgentStart(msg.agent);                          break;
       case 'agent_chunk':    handleAgentChunk(msg.agent, msg.data.text);           break;
       case 'agent_complete': handleAgentComplete(msg.agent, msg.data);             break;
+      case 'agent_status':   handleAgentStatus(msg.agent, msg.data.message);      break;
       case 'awaiting_review':handleAwaitingReview(msg.data.critique, msg.data.cycle, msg.data.questions); break;
       case 'cycle_start':    handleCycleStart(msg.data.cycle);                     break;
       case 'pipeline_done':  handlePipelineDone(msg.data.download_url);            break;
@@ -136,6 +137,14 @@ function connectWebSocket() {
 }
 
 /* ── Agent card handlers ── */
+function handleAgentStatus(agent, message) {
+  const el = document.getElementById(`status-${agent}`);
+  if (el) {
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+}
+
 function handleAgentStart(agent) {
   const card = document.getElementById(`card-${agent}`);
   const badge = document.getElementById(`badge-${agent}`);
@@ -148,6 +157,8 @@ function handleAgentStart(agent) {
   badge.textContent = 'Running…';
   output.textContent = '';
   output.classList.add('visible');
+  const statusEl = document.getElementById(`status-${agent}`);
+  if (statusEl) { statusEl.textContent = ''; statusEl.classList.add('hidden'); }
 }
 
 function handleAgentChunk(agent, text) {

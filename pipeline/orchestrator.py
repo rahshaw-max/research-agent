@@ -20,8 +20,11 @@ async def _stream_agent(name: str, generator, ws: WebSocket) -> str:
     await ws.send_json({"event": "agent_start", "agent": name, "data": {}})
     full_text = ""
     async for chunk in generator:
-        full_text += chunk
-        await ws.send_json({"event": "agent_chunk", "agent": name, "data": {"text": chunk}})
+        if isinstance(chunk, dict) and chunk.get("__type__") == "status":
+            await ws.send_json({"event": "agent_status", "agent": name, "data": {"message": chunk["message"]}})
+        else:
+            full_text += chunk
+            await ws.send_json({"event": "agent_chunk", "agent": name, "data": {"text": chunk}})
     await ws.send_json({"event": "agent_complete", "agent": name, "data": {}})
     return full_text
 

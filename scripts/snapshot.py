@@ -33,14 +33,39 @@ def _banner(title: str) -> None:
 
 
 async def _collect(label: str, generator) -> str:
-    """Stream an async generator to stdout and return the full text."""
+    """Stream an async generator to stdout and return the full text.
+    Status dicts (from web search) are printed as [status] lines but not
+    included in the returned text."""
     _banner(label)
     text = ""
     async for chunk in generator:
-        print(chunk, end="", flush=True)
-        text += chunk
+        if isinstance(chunk, dict) and chunk.get("__type__") == "status":
+            print(f"\n  [{chunk['message']}]", flush=True)
+        else:
+            print(chunk, end="", flush=True)
+            text += chunk
     print(flush=True)
     return text
+
+
+def _count_sources(researcher_md: str) -> list[str]:
+    """Extract unique URLs from the ## Sources section of a researcher report."""
+    import re
+    urls = []
+    in_sources = False
+    for line in researcher_md.splitlines():
+        if line.strip().startswith("## Sources"):
+            in_sources = True
+            continue
+        if in_sources:
+            if line.startswith("## "):
+                break  # next section
+            match = re.search(r"https?://\S+", line)
+            if match:
+                url = match.group(0).rstrip(")")
+                if url not in urls:
+                    urls.append(url)
+    return urls
 
 
 async def run_snapshot(idea: str, label: str, out_dir: str) -> None:
@@ -104,20 +129,26 @@ async def run_snapshot(idea: str, label: str, out_dir: str) -> None:
     with open(os.path.join(out_dir, "pptx_data.json"), "w") as f:
         json.dump(pptx_data, f, indent=2)
 
+    sources = _count_sources(researcher_out)
     meta = {
         "idea": idea,
         "label": label,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "output_dir": out_dir,
         "files": list(files.keys()) + ["pptx_data.json", "deck.pptx"],
+        "unique_sources": len(sources),
+        "sources": sources,
     }
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
     print(f"\n{'═' * 60}")
     print(f"  Snapshot complete")
-    print(f"  Directory : {out_dir}")
-    print(f"  Files     : {', '.join(meta['files'])}")
+    print(f"  Directory    : {out_dir}")
+    print(f"  Unique sources cited: {len(sources)}")
+    if sources:
+        for i, url in enumerate(sources, 1):
+            print(f"    [{i}] {url}")
     print(f"{'═' * 60}\n")
 
 

@@ -318,6 +318,16 @@ textarea:focus { border-color: var(--green); }
 .card-title { font-size: 14px; font-weight: 700; color: var(--near-black); }
 .card-version { font-size: 11px; font-weight: 400; color: var(--mid-gray); }
 .card-subtitle { font-size: 11px; color: var(--mid-gray); margin-top: 2px; }
+.agent-status-line {
+  font-size: 10px;
+  color: var(--green);
+  margin-top: 3px;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
 .cycle-label {
   font-size: 10px;
   background: var(--light-gray);
