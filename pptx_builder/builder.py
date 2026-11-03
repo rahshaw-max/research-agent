@@ -396,6 +396,53 @@ def _populate_slide_6(slide, data: dict):
     run2.font.name = "Calibri"
 
 
+def _add_ref_box(slide, left, top, width, height, refs: list[tuple[int, dict]], font_size: int):
+    """Add a numbered references text box (no bullet prefix)."""
+    txBox = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
+    tf = txBox.text_frame
+    tf.word_wrap = True
+    first = True
+    for num, s in refs:
+        title = (s.get("title") or "Untitled")[:80]
+        url = s.get("url") or ""
+        url_display = url[:65] + "…" if len(url) > 68 else url
+
+        p = tf.paragraphs[0] if first else tf.add_paragraph()
+        first = False
+        run = p.add_run()
+        run.text = f"{num}. {title}"
+        run.font.size = Pt(font_size)
+        run.font.bold = True
+        run.font.color.rgb = NEAR_BLACK
+        run.font.name = "Calibri"
+
+        if url_display:
+            p2 = tf.add_paragraph()
+            run2 = p2.add_run()
+            run2.text = f"   {url_display}"
+            run2.font.size = Pt(font_size - 1)
+            run2.font.color.rgb = MID_GRAY
+            run2.font.name = "Calibri"
+
+
+def _populate_slide_refs(slide, sources: list[dict]):
+    """References slide — appended after slide 6. Does not alter existing layouts."""
+    _remove_extra_shapes(slide)
+    _add_textbox(slide, 0.5, 0.3, 8.5, 0.5, "Sources & References",
+                 font_size=20, bold=True, color=DELOITTE_GREEN)
+
+    items = sources[:20]  # hard cap
+    font_size = 9 if len(items) <= 15 else 8  # shrink font for many items
+
+    numbered = list(enumerate(items, 1))
+    if len(items) <= 10:
+        _add_ref_box(slide, 0.5, 1.0, 8.5, 5.5, numbered, font_size)
+    else:
+        mid = (len(items) + 1) // 2
+        _add_ref_box(slide, 0.5, 1.0, 4.1, 5.5, numbered[:mid], font_size)
+        _add_ref_box(slide, 4.8, 1.0, 4.1, 5.5, numbered[mid:], font_size)
+
+
 SLIDE_POPULATORS = [
     _populate_slide_1,
     _populate_slide_2,
@@ -419,13 +466,19 @@ def build_presentation(session_id: str, data: dict, output_dir: str) -> str:
 
     # Ensure we have exactly 6 slides — pad or trim as needed
     while len(slides) < 6:
-        # Duplicate last slide's layout
         layout = slides[-1].slide_layout if slides else prs.slide_layouts[0]
         prs.slides.add_slide(layout)
 
     for i, populator in enumerate(SLIDE_POPULATORS):
         if i < len(slides):
             populator(slides[i], data)
+
+    # References slide (slide 7) — appended if sources are present
+    sources = data.get("sources", [])
+    if sources:
+        ref_layout = prs.slides[5].slide_layout
+        prs.slides.add_slide(ref_layout)
+        _populate_slide_refs(prs.slides[6], sources)
 
     prs.save(output_path)
     return output_path

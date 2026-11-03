@@ -4,7 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -33,6 +33,7 @@ class ClarifyRequest(BaseModel):
 class SubmitAnswersRequest(BaseModel):
     session_id: str
     answers: dict
+    depth: str = "standard"   # "quick" | "standard" | "deep"
 
 
 class ReviewRequest(BaseModel):
@@ -56,6 +57,7 @@ async def clarify(req: ClarifyRequest):
         "idea": req.idea,
         "questions": questions,
         "answers": {},
+        "depth": "standard",
         "agent_outputs": {},
         "pptx_path": None,
         "ws": None,
@@ -72,9 +74,10 @@ async def clarify(req: ClarifyRequest):
 async def submit_answers(req: SubmitAnswersRequest, background_tasks: BackgroundTasks):
     session = sessions.get(req.session_id)
     if not session:
-        return {"error": "Session not found"}, 404
+        raise HTTPException(status_code=404, detail="Session not found")
 
     session["answers"] = req.answers
+    session["depth"]   = req.depth
 
     from pipeline.orchestrator import run_pipeline
     background_tasks.add_task(run_pipeline, req.session_id, sessions)
@@ -86,7 +89,7 @@ async def submit_answers(req: SubmitAnswersRequest, background_tasks: Background
 async def review(req: ReviewRequest):
     session = sessions.get(req.session_id)
     if not session:
-        return {"error": "Session not found"}, 404
+        raise HTTPException(status_code=404, detail="Session not found")
 
     await session["hitl_queue"].put({
         "action": req.action,
@@ -102,7 +105,7 @@ async def review(req: ReviewRequest):
 async def download(session_id: str):
     session = sessions.get(session_id)
     if not session or not session.get("pptx_path"):
-        return {"error": "File not ready"}, 404
+        raise HTTPException(status_code=404, detail="File not ready")
     return FileResponse(
         session["pptx_path"],
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -124,7 +127,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     session["ws_ready"].set()
 
     try:
-        # Keep the connection alive — the pipeline pushes events to us
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

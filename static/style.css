@@ -76,6 +76,22 @@ textarea {
 }
 textarea:focus { border-color: var(--green); }
 
+/* ── Depth selector ── */
+.depth-row { display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; }
+.depth-label { font-size: 13px; color: var(--mid-gray); white-space: nowrap; }
+.depth-select {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  background: var(--white);
+  color: var(--near-black);
+  cursor: pointer;
+}
+.depth-select:focus { outline: none; border-color: var(--green); }
+
 /* ── Buttons ── */
 .btn-primary {
   background: var(--green);
@@ -394,6 +410,77 @@ textarea:focus { border-color: var(--green); }
   border-top: 1px dashed var(--green);
 }
 
+/* ── Coverage / gap audit panel ── */
+.coverage-panel {
+  background: var(--light-gray);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 12px;
+}
+.coverage-score-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.coverage-label { font-weight: 600; color: var(--near-black); }
+.coverage-value { font-size: 22px; font-weight: 700; color: var(--green); }
+.gap-summary { font-size: 11px; color: var(--mid-gray); margin-bottom: 6px; }
+.gap-item {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+}
+.gap-type {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--mid-gray);
+  min-width: 110px;
+  padding-top: 1px;
+}
+.gap-sev-4 .gap-type, .gap-sev-5 .gap-type { color: var(--error); }
+.gap-desc { flex: 1; color: var(--near-black); line-height: 1.4; }
+.gap-sev {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--mid-gray);
+  white-space: nowrap;
+}
+.gap-sev-4 .gap-sev, .gap-sev-5 .gap-sev { color: var(--error); }
+
+/* ── Verification counts bar ── */
+.verification-counts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--light-gray);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.vc-label { font-weight: 600; color: var(--near-black); margin-right: 4px; }
+.vc-stat { font-weight: 700; padding: 2px 6px; border-radius: 10px; font-size: 11px; }
+.vc-ok      { background: #D4EDDA; color: #155724; }
+.vc-partial { background: #FFF3CD; color: #7a5c00; }
+.vc-bad     { background: #FDEDEC; color: var(--error); }
+.vc-repair  { font-size: 11px; color: var(--mid-gray); }
+
+.auto-approve-banner {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #7a5c00;
+  line-height: 1.5;
+}
+
 /* ── Download area (in right panel after done) ── */
 .right-download-area {
   margin: 0 20px 16px;
@@ -407,5 +494,20 @@ textarea:focus { border-color: var(--green); }
   gap: 16px;
 }
 .right-download-area p { font-size: 13px; color: var(--mid-gray); flex: 1; }
+
+/* ── Stage timing table ── */
+.timing-summary {
+  margin: 0 20px 16px;
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: 16px;
+}
+.timing-summary h4 { margin: 0 0 10px; font-size: 13px; color: var(--deep-green); }
+.timing-table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: monospace; }
+.timing-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--mid-gray); font-weight: 600; }
+.timing-table td { padding: 3px 8px; border-bottom: 1px solid #f0f0f0; }
+.timing-table tfoot td { border-top: 1px solid var(--border); font-weight: 600; }
+.timing-total td { background: #f7f7f7; }
 
 .hidden { display: none !important; }

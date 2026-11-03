@@ -26,6 +26,14 @@
         <h2>What would you like to research?</h2>
         <p class="hint">Describe any idea, product concept, or technology you want explored.</p>
         <textarea id="idea-input" placeholder="e.g. AI-powered invoice processing platform for small businesses..." rows="6"></textarea>
+        <div class="depth-row">
+          <label for="depth-select" class="depth-label">Research depth</label>
+          <select id="depth-select" class="depth-select">
+            <option value="quick">Quick — 3 sub-questions, 1 cycle</option>
+            <option value="standard" selected>Standard — 6 sub-questions, up to 3 cycles</option>
+            <option value="deep">Deep — 8 sub-questions, full architecture critique</option>
+          </select>
+        </div>
         <button class="btn-primary" onclick="submitIdea()">Research This &rarr;</button>
         <div id="input-error" class="error-msg hidden"></div>
       </div>
@@ -60,6 +68,16 @@
         <p class="hint">Review the critique below, then choose how to proceed.</p>
 
         <div class="critique-panel" id="critique-panel"></div>
+
+        <div class="review-divider">Research Quality Audit</div>
+
+        <div id="coverage-score-panel" class="coverage-panel hidden"></div>
+
+        <div id="verification-counts-panel" class="verification-counts hidden"></div>
+
+        <div id="auto-approve-banner" class="auto-approve-banner hidden">
+          Research coverage did not increase meaningfully (&lt;0.03) — further cycles are unlikely to help. Consider approving.
+        </div>
 
         <div class="review-divider">Clarifying Questions from Interrogator Agent</div>
 

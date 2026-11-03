@@ -5,9 +5,10 @@ const state = {
   questions: [],
   ws: null,
   cycle: 1,
+  depth: 'standard',
 };
 
-const CYCLE_AGENTS = ['researcher', 'architect_v1', 'critic', 'interrogator'];
+const CYCLE_AGENTS = ['researcher', 'interrogator'];
 
 /* ── Phase management ── */
 function setPhase(phase) {
@@ -38,6 +39,7 @@ async function submitIdea() {
   btn.textContent = 'Loading…';
 
   try {
+    state.depth = document.getElementById('depth-select')?.value || 'standard';
     const res = await fetch('/api/clarify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -96,7 +98,7 @@ async function submitAnswers() {
     await fetch('/api/submit-answers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: state.sessionId, answers }),
+      body: JSON.stringify({ session_id: state.sessionId, answers, depth: state.depth }),
     });
 
     // Update running display
@@ -126,9 +128,10 @@ function connectWebSocket() {
       case 'agent_chunk':    handleAgentChunk(msg.agent, msg.data.text);           break;
       case 'agent_complete': handleAgentComplete(msg.agent, msg.data);             break;
       case 'agent_status':   handleAgentStatus(msg.agent, msg.data.message);      break;
-      case 'awaiting_review':handleAwaitingReview(msg.data.critique, msg.data.cycle, msg.data.questions); break;
+      case 'awaiting_review':handleAwaitingReview(msg.data); break;
       case 'cycle_start':    handleCycleStart(msg.data.cycle);                     break;
-      case 'pipeline_done':  handlePipelineDone(msg.data.download_url);            break;
+      case 'pipeline_done':  handlePipelineDone(msg.data);                          break;
+      case 'stage_timing':   handleStageTiming(msg.data);                          break;
       case 'error':          handleGlobalError(msg.data.message);                  break;
     }
   };
@@ -192,10 +195,26 @@ function handleAgentComplete(agent, data) {
 }
 
 /* ── HITL: awaiting review ── */
-function handleAwaitingReview(critique, cycle, questions) {
+function handleAwaitingReview(data) {
+  const { cycle, questions, gap_report, coverage_score, auto_approve_recommended, verification_counts } = data;
   state.cycle = cycle;
-  document.getElementById('critique-panel').textContent = critique;
   document.getElementById('review-cycle-badge').textContent = `Cycle ${cycle} of 3`;
+  const critiquePanel = document.getElementById('critique-panel');
+  if (critiquePanel) critiquePanel.classList.add('hidden');
+
+  // Render research quality audit panel
+  renderCoveragePanel(coverage_score, gap_report);
+
+  // Render verification counts (only if claims were verified)
+  renderVerificationCounts(verification_counts);
+
+  // Auto-approve banner
+  const banner = document.getElementById('auto-approve-banner');
+  if (auto_approve_recommended) {
+    banner.classList.remove('hidden');
+  } else {
+    banner.classList.add('hidden');
+  }
 
   // Render interrogator questions
   renderInterrogatorQuestions(questions || []);
@@ -211,6 +230,52 @@ function handleAwaitingReview(critique, cycle, questions) {
   }
 
   setPhase('REVIEWING');
+}
+
+function renderVerificationCounts(vc) {
+  const el = document.getElementById('verification-counts-panel');
+  if (!el) return;
+  if (!vc || vc.total === 0) {
+    el.classList.add('hidden');
+    return;
+  }
+  el.classList.remove('hidden');
+  const repairNote = (vc.repaired || vc.removed)
+    ? ` <span class="vc-repair">${vc.repaired} repaired · ${vc.removed} removed</span>`
+    : '';
+  el.innerHTML = `
+    <span class="vc-label">Claim Verification</span>
+    <span class="vc-stat vc-ok">${vc.supported} ✓</span>
+    <span class="vc-stat vc-partial">${vc.partial} ~</span>
+    <span class="vc-stat vc-bad">${vc.unsupported} ✗</span>
+    ${repairNote}
+  `;
+}
+
+function renderCoveragePanel(score, gap_report) {
+  const el = document.getElementById('coverage-score-panel');
+  if (!el) return;
+  el.classList.remove('hidden');
+
+  const pct = score != null ? Math.round(score * 100) : '?';
+  const gaps = (gap_report && gap_report.gaps) ? gap_report.gaps : [];
+  const highSev = gaps.filter(g => g.severity >= 4).length;
+
+  const gapRows = gaps.map(g => `
+    <div class="gap-item gap-sev-${g.severity}">
+      <span class="gap-type">${escapeHtml(g.type.replace(/_/g, ' '))}</span>
+      <span class="gap-desc">${escapeHtml(g.description)}</span>
+      <span class="gap-sev">sev ${g.severity}</span>
+    </div>`).join('');
+
+  el.innerHTML = `
+    <div class="coverage-score-row">
+      <span class="coverage-label">Research Coverage Score</span>
+      <span class="coverage-value">${pct}%</span>
+    </div>
+    ${gaps.length > 0 ? `<div class="gap-summary">${gaps.length} gap${gaps.length !== 1 ? 's' : ''} identified${highSev > 0 ? ` · ${highSev} high-severity` : ''}</div>` : '<div class="gap-summary">No gaps identified.</div>'}
+    ${gapRows}
+  `;
 }
 
 function renderInterrogatorQuestions(questions) {
@@ -316,7 +381,8 @@ function updateCycleIndicator(cycle) {
 }
 
 /* ── Pipeline done ── */
-function handlePipelineDone(downloadUrl) {
+function handlePipelineDone(data) {
+  const downloadUrl = data.download_url;
   document.getElementById('download-link').href = downloadUrl;
 
   // Add download area to right panel
@@ -335,7 +401,62 @@ function handlePipelineDone(downloadUrl) {
     cards.parentNode.insertBefore(area, cards);
   }
 
+  // Render timing summary if provided
+  if (data.timing && data.timing.length > 0) {
+    renderTimingSummary(data.timing, data.timing_totals);
+  }
+
   setPhase('DONE');
+}
+
+/* ── Stage timing ── */
+const _stageTiming = [];
+function handleStageTiming(data) {
+  _stageTiming.push(data);
+  // Update timing panel if visible
+  renderTimingSummary(_stageTiming, null);
+}
+
+function renderTimingSummary(rows, totals) {
+  let el = document.getElementById('timing-summary');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'timing-summary';
+    el.className = 'timing-summary';
+    const cards = document.getElementById('agent-cards');
+    cards.parentNode.appendChild(el);
+  }
+  const tot = totals || {
+    input_tokens: rows.reduce((s, r) => s + (r.input_tokens || 0), 0),
+    output_tokens: rows.reduce((s, r) => s + (r.output_tokens || 0), 0),
+    tool_calls: rows.reduce((s, r) => s + (r.tool_calls || 0), 0),
+  };
+  const totalSec = rows.reduce((s, r) => s + (r.seconds || 0), 0);
+  const rowsHtml = rows.map(r => {
+    const cyc = r.cycle > 0 ? `c${r.cycle}` : '';
+    return `<tr>
+      <td>${escapeHtml(r.stage)}</td>
+      <td>${escapeHtml(cyc)}</td>
+      <td>${(r.seconds || 0).toFixed(1)}s</td>
+      <td>${(r.input_tokens || 0).toLocaleString()}</td>
+      <td>${(r.output_tokens || 0).toLocaleString()}</td>
+      <td>${r.tool_calls || 0}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <h4>Stage Timing</h4>
+    <table class="timing-table">
+      <thead><tr><th>Stage</th><th>Cyc</th><th>Time</th><th>In tok</th><th>Out tok</th><th>Tools</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+      <tfoot><tr class="timing-total">
+        <td colspan="2">TOTAL</td>
+        <td>${totalSec.toFixed(1)}s</td>
+        <td>${tot.input_tokens.toLocaleString()}</td>
+        <td>${tot.output_tokens.toLocaleString()}</td>
+        <td>${tot.tool_calls}</td>
+      </tr></tfoot>
+    </table>
+  `;
 }
 
 /* ── Error handling ── */

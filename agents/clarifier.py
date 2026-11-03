@@ -1,11 +1,10 @@
-import json
-import os
-import anthropic
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
 
-client = anthropic.AsyncAnthropic()
+from agents.config import MODEL_FAST
+from agents.llm import tool_forced_call
 
 SYSTEM_PROMPT = """You are a research intake assistant. A user has submitted an idea or concept they want researched and turned into a presentation deck. Your job is to ask 3–5 targeted clarifying questions that will help scope the research properly.
 
@@ -16,22 +15,47 @@ Focus your questions on:
 - Any known constraints (time horizon, geography, budget scale)
 - What aspects they care about most (market, tech, competition, implementation)
 
-Return ONLY a valid JSON array of question strings. No preamble. No explanation. No markdown fences.
-Example: ["Who is the intended audience for this presentation?", "What is the primary goal — pitch, feasibility study, or internal exploration?"]"""
+Use the submit_questions tool to return your 3–5 questions."""
+
+_TOOL = {
+    "name": "submit_questions",
+    "description": "Submit the clarifying questions.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 3,
+                "maxItems": 5,
+            }
+        },
+        "required": ["questions"],
+    },
+}
+
+
+class _Questions(BaseModel):
+    questions: list[str]
+
+
+_FALLBACK = [
+    "Who is the intended audience for this presentation?",
+    "What is the primary goal — pitch deck, feasibility study, or internal exploration?",
+    "Are there any known constraints (budget, geography, or time horizon)?",
+]
 
 
 async def ask_clarifying_questions(idea: str) -> list[str]:
-    response = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"The user's idea is: {idea}"}],
-    )
-    text = response.content[0].text.strip()
-    # Strip markdown fences if Claude added them anyway
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
-    return json.loads(text)
+    try:
+        result = await tool_forced_call(
+            model=MODEL_FAST,
+            max_tokens=512,
+            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": f"The user's idea is: {idea}"}],
+            tool=_TOOL,
+            schema=_Questions,
+        )
+        return result.questions
+    except Exception:
+        return _FALLBACK

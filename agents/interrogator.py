@@ -1,52 +1,91 @@
-import json
-import anthropic
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
 
-client = anthropic.AsyncAnthropic()
+from agents.config import MODEL_FAST
+from agents.llm import tool_forced_call
 
-SYSTEM_PROMPT = """You are a strategic research interrogator. You have just read a critique of a research report and technical architecture. Your job is to generate exactly 10 targeted questions that, if answered by the requester, would most significantly improve the next research and architecture iteration.
+SYSTEM_PROMPT = """You are a strategic research interrogator. You have just read a research report and a structured quality-gap audit of that report. Your job is to generate exactly 10 targeted questions that, if answered by the requester, would most significantly improve the next research iteration.
 
 Generate questions across these categories:
-- Use case assumptions flagged as unproven (2 questions)
-- Missing or uncertain market facts (2 questions)
-- Underspecified technical choices (2 questions)
-- Security, compliance, or regulatory requirements that were unclear (2 questions)
-- Business constraints that were implicit but unstated (2 questions)
+- Unverified or thinly-sourced market claims (2 questions)
+- Missing primary sources or conflicting data points (2 questions)
+- Underspecified use-case assumptions (2 questions)
+- Regulatory, compliance, or legal angles not yet covered (2 questions)
+- Business constraints, competitive dynamics, or pricing factors that were implicit or absent (2 questions)
 
 Each question must:
-- Be specific to the critique findings — not generic
-- Be answerable by the requester (not asking for external research)
-- Directly address a gap or weakness identified in the critique
+- Be directly traceable to a gap or weakness named in the gap report
+- Be answerable by the requester (not delegating further external research)
+- Be specific, not generic
 
-Return ONLY a valid JSON array of exactly 10 question strings. No preamble, no explanation, no markdown fences."""
+Use the submit_questions tool to return exactly 10 questions."""
+
+_TOOL = {
+    "name": "submit_questions",
+    "description": "Submit exactly 10 targeted research questions.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 10,
+                "maxItems": 10,
+            }
+        },
+        "required": ["questions"],
+    },
+}
 
 
-async def run(idea: str, research: str, arch_v1: str, critique: str) -> list[str]:
+class _Questions(BaseModel):
+    questions: list[str]
+
+
+_FALLBACK = [
+    f"What additional context would help clarify research gap {i + 1}?"
+    for i in range(10)
+]
+
+
+async def run(
+    idea: str,
+    research: str,
+    gap_report: dict,
+    _usage: dict | None = None,
+) -> list[str]:
+    gaps = gap_report.get("gaps", [])
+    gaps_text = "\n".join(
+        f"- [sev {g['severity']}] {g['type']}: {g['description']}"
+        for g in gaps
+    ) if gaps else "(no gaps identified)"
+
+    coverage = gap_report.get("coverage_score", "?")
+
     user_prompt = f"""Idea: {idea}
 
 Research Report:
 {research}
 
-Architecture:
-{arch_v1}
-
-Critique (gaps and weaknesses identified):
-{critique}
+Research quality audit:
+Coverage score: {coverage}
+Gaps identified:
+{gaps_text}
 
 Generate exactly 10 targeted clarifying questions."""
 
-    response = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    text = response.content[0].text.strip()
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
-    return json.loads(text)
+    try:
+        result = await tool_forced_call(
+            model=MODEL_FAST,
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+            tool=_TOOL,
+            schema=_Questions,
+            _usage=_usage,
+        )
+        return result.questions
+    except Exception:
+        return _FALLBACK
