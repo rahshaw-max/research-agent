@@ -123,6 +123,9 @@ async def _stream_agent(
                 }})
             elif t == "report_final":
                 final_text = chunk.get("text", "")
+            elif t == "sub_questions":
+                if _meta is not None:
+                    _meta["sub_questions"] = chunk.get("questions", [])
             elif t == "thin_coverage_gaps":
                 if _meta is not None:
                     _meta["thin_coverage_gaps"] = chunk.get("gaps", [])
@@ -174,6 +177,7 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
 
     final_research: str | None = None
     prev_coverage_score: float | None = None
+    consecutive_small_improvements: int = 0
     last_gap_report: dict = {}
 
     try:
@@ -225,75 +229,22 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
             all_timing.append({"stage": "researcher", "cycle": cycle,
                                 "evidence_count": len(cycle_evidence), **ru})
 
-            # ── Critique + Verifier concurrently (safe degradation) ──────────
-            rcu: dict = {}
+            # ── Verifier first (on raw report) ──────────────────────────────
             vu: dict = {}
-            t0_parallel = time.perf_counter()
-
+            t0_verifier = time.perf_counter()
             try:
-                await ws.send_json({"event": "agent_start", "agent": "critic", "data": {}})
-            except Exception:
-                pass
-
-            try:
-                [last_gap_report, verify_result] = await asyncio.gather(
-                    critic.run_research_critique(idea, final_research, session["answers"], _usage=rcu),
-                    verifier.run(final_research, idea, session["answers"], evidence=cycle_evidence, _usage=vu),
+                verify_result = await verifier.run(
+                    final_research, idea, session["answers"],
+                    evidence=cycle_evidence, _usage=vu,
                 )
-                _validate("research_critique", last_gap_report)
-            except StageFailed:
-                raise
             except Exception as exc:
                 _log_error(session_id, exc)
-                try:
-                    await ws.send_json({"event": "agent_status", "agent": "critic", "data": {
-                        "message": f"WARNING: critique/verifier error — using empty gap report ({type(exc).__name__})"
-                    }})
-                except Exception:
-                    pass
-                last_gap_report = {"coverage_score": 0.0, "gaps": []}
                 verify_result = {
                     "report": final_research,
                     "counts": {"total": 0, "supported": 0, "partial": 0,
                                "unsupported": 0, "repaired": 0, "removed": 0},
                 }
-
-            t_parallel = round(time.perf_counter() - t0_parallel, 2)
-
-            try:
-                await ws.send_json({"event": "agent_complete", "agent": "critic", "data": {}})
-            except Exception:
-                pass
-
-            # Record both with shared wall time (they overlapped)
-            for stage, u in [("research_critique", rcu), ("verifier", vu)]:
-                record = {"stage": stage, "cycle": cycle, "seconds": t_parallel, **u}
-                _write_timing(log_path, record)
-                all_timing.append(record)
-                try:
-                    await ws.send_json({"event": "stage_timing", "agent": stage, "data": record})
-                except Exception:
-                    pass
-
-            # Merge any thin_coverage gaps from failed sub-researchers
-            thin_coverage_gaps: list[str] = researcher_meta.get("thin_coverage_gaps", [])
-            if thin_coverage_gaps:
-                extra = [
-                    {
-                        "type": "thin_coverage",
-                        "description": f"Sub-question failed during research: {sq[:80]}",
-                        "severity": 3,
-                        "suggested_queries": [sq[:120]],
-                    }
-                    for sq in thin_coverage_gaps
-                ]
-                last_gap_report.setdefault("gaps", []).extend(extra)
-
-            coverage_score: float = last_gap_report.get("coverage_score", 0.0)
-            auto_approve_recommended = False
-            if prev_coverage_score is not None:
-                auto_approve_recommended = (coverage_score - prev_coverage_score) < 0.03
-            prev_coverage_score = coverage_score
+            t_verifier = round(time.perf_counter() - t0_verifier, 2)
 
             final_research = verify_result["report"]
             vcounts = verify_result["counts"]
@@ -313,6 +264,97 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
                     })
                 except Exception:
                     pass
+
+            # ── Critique on repaired report ──────────────────────────────────
+            # uncited_share: proportion of claims verifier couldn't support
+            uncited_share = vcounts.get("unsupported", 0) / max(vcounts.get("total", 0), 1)
+            sub_questions: list[str] = researcher_meta.get("sub_questions", [])
+
+            rcu: dict = {}
+            t0_critique = time.perf_counter()
+            try:
+                await ws.send_json({"event": "agent_start", "agent": "critic", "data": {}})
+            except Exception:
+                pass
+            try:
+                last_gap_report = await critic.run_research_critique(
+                    idea, final_research, session["answers"],
+                    sub_questions=sub_questions,
+                    evidence=cycle_evidence,
+                    uncited_share=uncited_share,
+                    _usage=rcu,
+                )
+                _validate("research_critique", last_gap_report)
+            except StageFailed:
+                raise
+            except Exception as exc:
+                _log_error(session_id, exc)
+                try:
+                    await ws.send_json({"event": "agent_status", "agent": "critic", "data": {
+                        "message": f"WARNING: critique error — using empty gap report ({type(exc).__name__})"
+                    }})
+                except Exception:
+                    pass
+                last_gap_report = {"coverage_score": 0.0, "gaps": [], "sub_question_scores": []}
+            t_critique = round(time.perf_counter() - t0_critique, 2)
+            try:
+                await ws.send_json({"event": "agent_complete", "agent": "critic", "data": {}})
+            except Exception:
+                pass
+
+            # Record timing separately
+            for stage, u, secs in [("verifier", vu, t_verifier), ("research_critique", rcu, t_critique)]:
+                record = {"stage": stage, "cycle": cycle, "seconds": secs, **u}
+                _write_timing(log_path, record)
+                all_timing.append(record)
+                try:
+                    await ws.send_json({"event": "stage_timing", "agent": stage, "data": record})
+                except Exception:
+                    pass
+
+            # Merge thin_coverage gaps from failed sub-researchers
+            thin_coverage_gaps: list[str] = researcher_meta.get("thin_coverage_gaps", [])
+            if thin_coverage_gaps:
+                extra = [
+                    {
+                        "type": "thin_coverage",
+                        "description": f"Sub-question failed during research: {sq[:80]}",
+                        "severity": 3,
+                        "suggested_queries": [sq[:120]],
+                    }
+                    for sq in thin_coverage_gaps
+                ]
+                last_gap_report.setdefault("gaps", []).extend(extra)
+
+            coverage_score: float = last_gap_report.get("coverage_score", 0.0)
+
+            # ── Stop-rule: threshold OR two consecutive small improvements ────
+            if prev_coverage_score is not None:
+                improvement = coverage_score - prev_coverage_score
+                if improvement < 0.03:
+                    consecutive_small_improvements += 1
+                else:
+                    consecutive_small_improvements = 0
+                at_threshold = coverage_score >= critic.COVERAGE_THRESHOLD
+                plateaued    = consecutive_small_improvements >= 2
+                auto_approve_recommended = at_threshold or plateaued
+                if at_threshold:
+                    recommendation_reason = (
+                        f"score {coverage_score:.2f} ≥ threshold {critic.COVERAGE_THRESHOLD:.2f}"
+                    )
+                elif plateaued:
+                    recommendation_reason = (
+                        f"improvement < 0.03 for {consecutive_small_improvements} consecutive cycles"
+                    )
+                else:
+                    recommendation_reason = (
+                        f"score {coverage_score:.2f} (need ≥{critic.COVERAGE_THRESHOLD:.2f}), "
+                        f"Δ={improvement:+.3f}"
+                    )
+            else:
+                auto_approve_recommended = False
+                recommendation_reason = f"first cycle — score {coverage_score:.2f}"
+            prev_coverage_score = coverage_score
 
             # ── Interrogator (safe degradation — falls back to default questions) ──
             iu: dict = {}
@@ -356,6 +398,8 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
                         "gap_report": last_gap_report,
                         "coverage_score": coverage_score,
                         "auto_approve_recommended": auto_approve_recommended,
+                        "recommendation_reason": recommendation_reason,
+                        "per_sub_question_scores": last_gap_report.get("sub_question_scores", []),
                         "verification_counts": vcounts,
                     },
                 })

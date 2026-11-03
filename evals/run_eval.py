@@ -31,21 +31,24 @@ _EVALS_DIR = os.path.dirname(os.path.abspath(__file__))
 _QUESTIONS  = os.path.join(_EVALS_DIR, "questions.json")
 
 
-async def _drain(generator) -> str:
-    """Consume researcher's async generator; return the final report text."""
+async def _drain_with_meta(generator) -> tuple[str, dict]:
+    """Consume researcher's async generator; return (report_text, meta)."""
     text = ""
     final: str | None = None
+    meta: dict = {}
     async for chunk in generator:
         if isinstance(chunk, dict):
             if chunk.get("__type__") == "report_final":
                 final = chunk.get("text", "")
+            elif chunk.get("__type__") == "sub_questions":
+                meta["sub_questions"] = chunk.get("questions", [])
         else:
             text += chunk
-    return final if final is not None else text
+    return (final if final is not None else text), meta
 
 
 async def _run_head(q: dict) -> dict:
-    """Full HEAD pipeline: researcher → [critique ‖ verifier]."""
+    """Full HEAD pipeline: researcher → verifier → critique(repaired)."""
     idea    = q["idea"]
     answers = q.get("answers", {})
     t0_wall = time.perf_counter()
@@ -54,7 +57,7 @@ async def _run_head(q: dict) -> dict:
     evidence: list = []
     ru: dict = {}
     t0 = time.perf_counter()
-    report = await _drain(researcher.run(
+    report, researcher_meta = await _drain_with_meta(researcher.run(
         idea, answers,
         _usage=ru,
         _evidence=evidence,
@@ -63,27 +66,38 @@ async def _run_head(q: dict) -> dict:
         fetches_per_subq=DEPTH_QUICK["fetches"],
     ))
     stages.append({"stage": "researcher", "seconds": round(time.perf_counter() - t0, 2), **ru})
+    sub_questions: list[str] = researcher_meta.get("sub_questions", [])
 
-    rcu: dict = {}
-    vu:  dict = {}
+    # Verifier first
+    vu: dict = {}
     t0 = time.perf_counter()
-    [gap_report, verify_result] = await asyncio.gather(
-        critic.run_research_critique(idea, report, answers, _usage=rcu),
-        verifier.run(report, idea, answers, evidence=evidence, _usage=vu),
+    verify_result = await verifier.run(report, idea, answers, evidence=evidence, _usage=vu)
+    stages.append({"stage": "verifier", "seconds": round(time.perf_counter() - t0, 2), **vu})
+    repaired_report = verify_result["report"]
+    vcounts = verify_result["counts"]
+    uncited_share = vcounts.get("unsupported", 0) / max(vcounts.get("total", 0), 1)
+
+    # Critique on repaired report
+    rcu: dict = {}
+    t0 = time.perf_counter()
+    gap_report = await critic.run_research_critique(
+        idea, repaired_report, answers,
+        sub_questions=sub_questions,
+        evidence=evidence,
+        uncited_share=uncited_share,
+        _usage=rcu,
     )
-    t_par = round(time.perf_counter() - t0, 2)
-    stages.append({"stage": "research_critique", "seconds": t_par, **rcu})
-    stages.append({"stage": "verifier",          "seconds": t_par, **vu})
-    report = verify_result["report"]
+    stages.append({"stage": "research_critique", "seconds": round(time.perf_counter() - t0, 2), **rcu})
 
     return {
         "id":                   q["id"],
         "idea":                 idea,
         "answers":              answers,
-        "report":               report,
+        "report":               repaired_report,
         "evidence":             evidence,
+        "sub_questions":        sub_questions,
         "gap_report":           gap_report,
-        "verification_counts":  verify_result["counts"],
+        "verification_counts":  vcounts,
         "timing": {
             "wall_seconds":       round(time.perf_counter() - t0_wall, 2),
             "stages":             stages,

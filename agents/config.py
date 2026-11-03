@@ -5,3 +5,4 @@ load_dotenv()
 import os
 MODEL_FAST      = os.getenv("MODEL_FAST",      "claude-haiku-4-5-20251001")
 MODEL_SYNTHESIS = os.getenv("MODEL_SYNTHESIS",  "claude-sonnet-4-6")
+MODEL_CRITIQUE  = os.getenv("MODEL_CRITIQUE",   MODEL_SYNTHESIS)   # research gap analysis; defaults to synthesis model

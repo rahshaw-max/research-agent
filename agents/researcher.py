@@ -24,27 +24,39 @@ max_content_tokens parameter. Content is bounded by the model's max_tokens budge
 
 import asyncio
 import json
+import logging
 import os
+import random
 import re
+import time
 
 import anthropic
-from dotenv import load_dotenv
-
-load_dotenv()
-
-client = anthropic.AsyncAnthropic()
 
 from agents.config import MODEL_FAST, MODEL_SYNTHESIS
+from agents.errors import StageFailed
+from agents.llm import client
 from evals.domains import source_type_of
+
+log = logging.getLogger(__name__)
 
 RESEARCH_CONCURRENCY    = int(os.getenv("RESEARCH_CONCURRENCY",        "4"))
 SEARCHES_PER_SUBQ       = int(os.getenv("RESEARCH_SEARCHES_PER_SUBQ",  "3"))
 FETCHES_PER_SUBQ        = int(os.getenv("RESEARCH_FETCHES_PER_SUBQ",   "2"))
 RESEARCH_TIMEOUT        = float(os.getenv("RESEARCH_TIMEOUT_SECONDS",  "150"))
 RESEARCH_EVIDENCE_LIMIT = int(os.getenv("RESEARCH_EVIDENCE_LIMIT",     "40"))
+MIN_EVIDENCE            = int(os.getenv("RESEARCH_MIN_EVIDENCE",        "8"))
 SUBQ_MAX_TOKENS         = 1536   # bounds fetch content processed per sub-researcher turn
 _EXCERPT_LIMIT          = 2000   # chars of fetched text to store per source
 _SYNTH_QUOTE_LIMIT      = 300    # chars of quote/excerpt shown per evidence item in synthesis
+_MAX_SUBQ_RETRIES       = 2      # app-level retries for transient API errors per sub-question
+
+# Transient errors worth retrying (timeouts, rate limits, server overload)
+_TRANSIENT = (
+    anthropic.APITimeoutError,
+    anthropic.APIConnectionError,
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,
+)
 
 # Source-type priority for synthesis selection (lower = higher priority)
 _SOURCE_PRIORITY = {"primary": 0, "analyst": 1, "news": 2, "blog": 3, "other": 4}
@@ -425,16 +437,50 @@ async def _research_subquestion(
         full_text = ""
 
         while True:
-            try:
-                response = await client.messages.create(
-                    model=MODEL_FAST,
-                    max_tokens=SUBQ_MAX_TOKENS,
-                    system=_SUBQ_SYSTEM,
-                    messages=messages,
-                    tools=tools,
-                )
-            except anthropic.APIError:
-                break
+            # ── API call with transient-error retry ──────────────────────────
+            response = None
+            last_error: str | None = None
+            for _attempt in range(_MAX_SUBQ_RETRIES + 1):
+                _t0 = time.perf_counter()
+                try:
+                    response = await client.messages.create(
+                        model=MODEL_FAST,
+                        max_tokens=SUBQ_MAX_TOKENS,
+                        system=_SUBQ_SYSTEM,
+                        messages=messages,
+                        tools=tools,
+                    )
+                    break  # success
+                except _TRANSIENT as exc:
+                    _elapsed = round(time.perf_counter() - _t0, 2)
+                    _status  = getattr(exc, "status_code", None)
+                    log.warning(
+                        "researcher subquestion transient error type=%s status=%s "
+                        "elapsed=%.1fs attempt=%d/%d subq=%r",
+                        type(exc).__name__, _status, _elapsed,
+                        _attempt, _MAX_SUBQ_RETRIES, subquestion[:60],
+                    )
+                    last_error = f"{type(exc).__name__}(status={_status})"
+                    if _attempt >= _MAX_SUBQ_RETRIES:
+                        break  # exhausted — fall through to failure return
+                    await asyncio.sleep((2 ** _attempt) + random.random())
+                except anthropic.APIError as exc:
+                    _status = getattr(exc, "status_code", None)
+                    log.warning(
+                        "researcher subquestion non-transient error type=%s status=%s subq=%r",
+                        type(exc).__name__, _status, subquestion[:60],
+                    )
+                    last_error = f"{type(exc).__name__}(status={_status})"
+                    break  # non-transient, don't retry
+
+            if response is None:
+                return {
+                    "subquestion":  subquestion,
+                    "raw_evidence": list(raw_ev_by_url.values()),
+                    "summary":      full_text.strip(),
+                    "failed":       True,
+                    "error":        last_error or "unknown API error",
+                }
 
             if _usage is not None:
                 _usage["input_tokens"]  = _usage.get("input_tokens",  0) + response.usage.input_tokens
@@ -456,6 +502,16 @@ async def _research_subquestion(
             for block in response.content:
                 if getattr(block, "type", None) == "text":
                     full_text += block.text
+
+            # max_tokens with no usable text = treat as failure
+            if response.stop_reason == "max_tokens" and not full_text and not raw_ev_by_url:
+                return {
+                    "subquestion":  subquestion,
+                    "raw_evidence": [],
+                    "summary":      "",
+                    "failed":       True,
+                    "error":        "max_tokens with empty output",
+                }
 
             if response.stop_reason != "pause_turn":
                 break
@@ -619,6 +675,7 @@ async def run(
         _usage["output_tokens"] = _usage.get("output_tokens", 0) + plan_usage.get("output_tokens", 0)
     plan = plan[:max_subq]
     yield {"__type__": "status", "message": f"planned {len(plan)} sub-questions"}
+    yield {"__type__": "sub_questions", "questions": [sp["subquestion"] for sp in plan]}
 
     # ── Step B: Parallel sub-researchers ─────────────────────────────────
     semaphore = asyncio.Semaphore(RESEARCH_CONCURRENCY)
@@ -660,6 +717,37 @@ async def run(
                 yield {"__type__": "status", "message": f"found {n_ev} sources: {label}"}
             except Exception:
                 pass
+
+    # ── Partial-failure policy ────────────────────────────────────────────
+    succeeded_subq = [r for r in subq_results if not r.get("failed")]
+    failed_subq    = [r for r in subq_results if r.get("failed")]
+
+    if failed_subq:
+        failed_names = ", ".join(r["subquestion"][:50] for r in failed_subq)
+        yield {"__type__": "status",
+               "message": f"WARNING: {len(failed_subq)}/{len(subq_results)} sub-questions failed: {failed_names}"}
+
+    n_unique_ok = len({
+        ev.get("url")
+        for r in succeeded_subq
+        for ev in r.get("raw_evidence", [])
+        if ev.get("url")
+    })
+    success_rate = len(succeeded_subq) / max(len(tasks), 1)
+
+    if success_rate < 0.5 or n_unique_ok < MIN_EVIDENCE:
+        raise StageFailed(
+            "researcher",
+            f"{len(failed_subq)}/{len(tasks)} sub-questions failed; "
+            f"only {n_unique_ok} unique sources gathered (need {MIN_EVIDENCE})",
+        )
+
+    # Surface failed subquestions as thin_coverage gaps for the next cycle
+    if failed_subq:
+        yield {
+            "__type__": "thin_coverage_gaps",
+            "gaps": [r["subquestion"] for r in failed_subq],
+        }
 
     # ── Merge and deduplicate evidence ────────────────────────────────────
     # Build a URL-keyed dict across all sub-questions for enrichment

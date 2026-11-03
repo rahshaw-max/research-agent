@@ -197,7 +197,8 @@ function handleAgentComplete(agent, data) {
 
 /* ── HITL: awaiting review ── */
 function handleAwaitingReview(data) {
-  const { cycle, questions, gap_report, coverage_score, auto_approve_recommended, verification_counts } = data;
+  const { cycle, questions, gap_report, coverage_score, auto_approve_recommended,
+          recommendation_reason, per_sub_question_scores, verification_counts } = data;
   state.cycle = cycle;
   document.getElementById('review-cycle-badge').textContent = `Cycle ${cycle} of 3`;
   const critiquePanel = document.getElementById('critique-panel');
@@ -206,15 +207,26 @@ function handleAwaitingReview(data) {
   // Render research quality audit panel
   renderCoveragePanel(coverage_score, gap_report);
 
+  // Render per-sub-question scores table
+  renderSubQuestionScores(per_sub_question_scores || []);
+
   // Render verification counts (only if claims were verified)
   renderVerificationCounts(verification_counts);
 
-  // Auto-approve banner
+  // Auto-approve banner with reason
   const banner = document.getElementById('auto-approve-banner');
   if (auto_approve_recommended) {
+    banner.textContent = recommendation_reason
+      ? `Coverage assessment: ${recommendation_reason} — further cycles unlikely to help. Consider approving.`
+      : 'Research coverage did not increase meaningfully (<0.03) — further cycles are unlikely to help. Consider approving.';
     banner.classList.remove('hidden');
   } else {
-    banner.classList.add('hidden');
+    if (recommendation_reason) {
+      banner.textContent = recommendation_reason;
+      banner.classList.remove('hidden');
+    } else {
+      banner.classList.add('hidden');
+    }
   }
 
   // Render interrogator questions
@@ -276,6 +288,40 @@ function renderCoveragePanel(score, gap_report) {
     </div>
     ${gaps.length > 0 ? `<div class="gap-summary">${gaps.length} gap${gaps.length !== 1 ? 's' : ''} identified${highSev > 0 ? ` · ${highSev} high-severity` : ''}</div>` : '<div class="gap-summary">No gaps identified.</div>'}
     ${gapRows}
+  `;
+}
+
+function renderSubQuestionScores(scores) {
+  let el = document.getElementById('subq-scores-panel');
+  if (!el) return;
+  if (!scores || scores.length === 0) {
+    el.classList.add('hidden');
+    return;
+  }
+  el.classList.remove('hidden');
+  const rows = scores.map(s => {
+    const raw = typeof s.score === 'number' ? s.score : 0;
+    const pct = Math.round(raw * 100);
+    const domains = s.n_independent_domains ?? '?';
+    const primary = s.has_primary_source ? '✓' : '✗';
+    const barClass = pct >= 70 ? 'subq-bar-good' : pct >= 40 ? 'subq-bar-mid' : 'subq-bar-low';
+    return `<tr class="subq-row">
+      <td class="subq-question" title="${escapeHtml(s.rationale || '')}">${escapeHtml((s.sub_question || '').substring(0, 60))}${(s.sub_question || '').length > 60 ? '…' : ''}</td>
+      <td class="subq-score">
+        <div class="subq-bar-wrap"><div class="subq-bar ${barClass}" style="width:${pct}%"></div></div>
+        <span class="subq-pct">${pct}%</span>
+      </td>
+      <td class="subq-domains">${escapeHtml(String(domains))}</td>
+      <td class="subq-primary ${s.has_primary_source ? 'primary-yes' : 'primary-no'}">${primary}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="subq-title">Per-Sub-Question Coverage</div>
+    <table class="subq-table">
+      <thead><tr><th>Sub-question</th><th>Score</th><th>Domains</th><th>Primary</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="subq-hint">Hover sub-question for model rationale. Scores are capped deterministically: &lt;2 domains→max 50%, no primary→max 70%.</p>
   `;
 }
 
