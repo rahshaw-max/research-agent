@@ -7,6 +7,11 @@ Step B  MODEL_FAST  (concurrent tasks) : one sub-researcher per sub-question, se
 Step C  MODEL_SYNTHESIS (1 streaming call, no tools) : write the structured report from merged,
                                          deduplicated evidence with [E#] citations
 
+Evidence record shape:
+  {id, title, url, page_age, source_type, quote, retrieved_text_excerpt}
+  - quote: cited_text from web_search_result_location citations on text blocks (≤150 chars)
+  - retrieved_text_excerpt: first 2000 chars of web_fetch body (source.data for text pages)
+
 On refinement cycles (prev_research supplied):
   - Prior evidence is carried via the _evidence list already containing previous items
   - Sub-questions target only gap_queries
@@ -30,20 +35,29 @@ load_dotenv()
 client = anthropic.AsyncAnthropic()
 
 from agents.config import MODEL_FAST, MODEL_SYNTHESIS
-RESEARCH_CONCURRENCY = int(os.getenv("RESEARCH_CONCURRENCY",   "4"))
-SEARCHES_PER_SUBQ   = int(os.getenv("RESEARCH_SEARCHES_PER_SUBQ", "3"))
-FETCHES_PER_SUBQ    = int(os.getenv("RESEARCH_FETCHES_PER_SUBQ",  "2"))
-RESEARCH_TIMEOUT    = float(os.getenv("RESEARCH_TIMEOUT_SECONDS", "150"))
-SUBQ_MAX_TOKENS     = 1536   # bounds fetch content processed per sub-researcher turn
+from evals.domains import source_type_of
+
+RESEARCH_CONCURRENCY    = int(os.getenv("RESEARCH_CONCURRENCY",        "4"))
+SEARCHES_PER_SUBQ       = int(os.getenv("RESEARCH_SEARCHES_PER_SUBQ",  "3"))
+FETCHES_PER_SUBQ        = int(os.getenv("RESEARCH_FETCHES_PER_SUBQ",   "2"))
+RESEARCH_TIMEOUT        = float(os.getenv("RESEARCH_TIMEOUT_SECONDS",  "150"))
+RESEARCH_EVIDENCE_LIMIT = int(os.getenv("RESEARCH_EVIDENCE_LIMIT",     "40"))
+SUBQ_MAX_TOKENS         = 1536   # bounds fetch content processed per sub-researcher turn
+_EXCERPT_LIMIT          = 2000   # chars of fetched text to store per source
+_SYNTH_QUOTE_LIMIT      = 300    # chars of quote/excerpt shown per evidence item in synthesis
+
+# Source-type priority for synthesis selection (lower = higher priority)
+_SOURCE_PRIORITY = {"primary": 0, "analyst": 1, "news": 2, "blog": 3, "other": 4}
 
 # ── System prompts ─────────────────────────────────────────────────────────
 
 _CITATION_RULES = """
 CITATION RULES (mandatory):
-- You are given an evidence list with IDs [E1], [E2], etc.
+- You are given an evidence list with IDs [E1], [E2], etc. Each item shows its source text or excerpt.
 - Attach an inline citation [EN] to EVERY factual bullet — use the exact ID from the evidence list.
+- A claim MUST be supported by text visible in the quoted excerpt for that evidence item.
 - A single bullet may carry multiple [EN] citations.
-- If a claim cannot be matched to any evidence ID, write "(unverified)" — do not guess.
+- If a claim cannot be matched to any evidence item's text, write "(unverified)" — do not guess.
 - End your entire response with a "## Sources" section listing every cited evidence ID as:
   [E1] Title — URL
   (one line per source, ordered by evidence ID)
@@ -167,20 +181,102 @@ Be specific, factual, and dense with data. Mention source domains or titles for 
 
 # ── Evidence helpers ───────────────────────────────────────────────────────
 
-def _extract_raw_evidence(content_blocks) -> list[dict]:
-    """Extract {title, url, page_age} from web_search_tool_result blocks (no IDs yet)."""
-    results: list[dict] = []
+def _extract_evidence_from_blocks(content_blocks) -> dict[str, dict]:
+    """
+    Extract evidence from all block types in one response turn.
+    Returns {url: {title, url, page_age, source_type, quote, retrieved_text_excerpt}}.
+
+    Sources:
+    - web_search_tool_result  → title, url, page_age (text is encrypted — not readable)
+    - web_fetch_tool_result   → retrieved_text_excerpt from source.data (text pages only)
+    - text block citations     → cited_text as quote (web_search_result_location only)
+    """
+    by_url: dict[str, dict] = {}
+
+    def _ensure(url: str, title: str = "", page_age=None) -> dict:
+        if url not in by_url:
+            by_url[url] = {
+                "title":                 title,
+                "url":                   url,
+                "page_age":              page_age,
+                "source_type":           source_type_of(url),
+                "quote":                 "",
+                "retrieved_text_excerpt": "",
+            }
+        return by_url[url]
+
     for block in content_blocks:
-        if getattr(block, "type", None) != "web_search_tool_result":
-            continue
-        for item in getattr(block, "content", []):
-            if getattr(item, "type", None) == "web_search_result":
-                results.append({
-                    "title":    (getattr(item, "title",    None) or "").strip(),
-                    "url":      (getattr(item, "url",      None) or "").strip(),
-                    "page_age": getattr(item, "page_age", None),
-                })
-    return results
+        btype = getattr(block, "type", None)
+
+        # ── web_search results ──────────────────────────────────────────────
+        if btype == "web_search_tool_result":
+            bc = getattr(block, "content", [])
+            if not isinstance(bc, list):
+                continue
+            for item in bc:
+                if getattr(item, "type", None) != "web_search_result":
+                    continue
+                url = (getattr(item, "url", None) or "").strip()
+                if not url:
+                    continue
+                title    = (getattr(item, "title",    None) or "").strip()
+                page_age = getattr(item, "page_age", None)
+                rec = _ensure(url, title, page_age)
+                # Back-fill title/page_age if the record was created by a citation first
+                if not rec["title"] and title:
+                    rec["title"] = title
+                if not rec["page_age"] and page_age:
+                    rec["page_age"] = page_age
+
+        # ── web_fetch results ───────────────────────────────────────────────
+        elif btype == "web_fetch_tool_result":
+            bc = getattr(block, "content", None)
+            if bc is None or getattr(bc, "type", None) != "web_fetch_result":
+                continue
+            url = (getattr(bc, "url", None) or "").strip()
+            if not url:
+                continue
+            doc    = getattr(bc, "content", None)
+            title  = ""
+            excerpt = ""
+            if doc:
+                title = (getattr(doc, "title", None) or "").strip()
+                src   = getattr(doc, "source", None)
+                # Only read text pages (not base64-encoded PDFs)
+                if src and getattr(src, "type", None) == "text":
+                    data   = getattr(src, "data", "") or ""
+                    excerpt = data[:_EXCERPT_LIMIT]
+
+            rec = _ensure(url, title)
+            if excerpt and not rec["retrieved_text_excerpt"]:
+                rec["retrieved_text_excerpt"] = excerpt
+            if title and not rec["title"]:
+                rec["title"] = title
+
+        # ── text blocks → cited_text from web_search_result_location ────────
+        elif btype == "text":
+            for citation in (getattr(block, "citations", None) or []):
+                if getattr(citation, "type", None) != "web_search_result_location":
+                    continue
+                url        = (getattr(citation, "url",        None) or "").strip()
+                cited_text = (getattr(citation, "cited_text", None) or "").strip()
+                title      = (getattr(citation, "title",      None) or "").strip()
+                if not url or not cited_text:
+                    continue
+                rec = _ensure(url, title)
+                if not rec["quote"]:
+                    rec["quote"] = cited_text
+                if title and not rec["title"]:
+                    rec["title"] = title
+
+    return by_url
+
+
+def _enrich(base: dict, new: dict) -> None:
+    """Merge `new` into `base` for fields that are empty in base."""
+    for field in ("quote", "retrieved_text_excerpt", "title", "page_age"):
+        if new.get(field) and not base.get(field):
+            base[field] = new[field]
 
 
 def _dedup_assign_ids(raw_items: list[dict], start_n: int = 0) -> list[dict]:
@@ -198,12 +294,29 @@ def _dedup_assign_ids(raw_items: list[dict], start_n: int = 0) -> list[dict]:
     return result
 
 
+def _select_for_synthesis(evidence: list[dict], limit: int) -> list[dict]:
+    """
+    Select up to `limit` evidence items for the synthesis prompt.
+    Priority: primary > analyst > news > blog > other.
+    Within each tier, items with text (quote or excerpt) come first;
+    otherwise original discovery order is preserved (stable sort).
+    """
+    def _key(e):
+        has_text = bool(e.get("quote") or e.get("retrieved_text_excerpt"))
+        return (_SOURCE_PRIORITY.get(e.get("source_type", "other"), 4), 0 if has_text else 1)
+    return sorted(evidence, key=_key)[:limit]
+
+
 def _evidence_list_text(evidence: list[dict]) -> str:
+    """Format evidence for the synthesis prompt, including quote/excerpt."""
     lines = []
     for e in evidence:
         line = f"[{e['id']}] {e['title']} — {e['url']}"
         if e.get("page_age"):
             line += f" ({e['page_age']})"
+        text = e.get("quote") or (e.get("retrieved_text_excerpt", "")[:_SYNTH_QUOTE_LIMIT])
+        if text:
+            line += f'\n    Excerpt: "{text}"'
         lines.append(line)
     return "\n".join(lines)
 
@@ -293,7 +406,8 @@ async def _research_subquestion(
 ) -> dict:
     """
     Run a mini research loop for one sub-question (MODEL_FAST, server-side tools).
-    Returns {subquestion, raw_evidence: [{title, url, page_age}], summary: str}.
+    Returns {subquestion, raw_evidence: [{title, url, page_age, source_type, quote,
+                                          retrieved_text_excerpt}], summary: str}.
     """
     async with semaphore:
         tools = [
@@ -306,7 +420,8 @@ async def _research_subquestion(
             f"Priority search queries:\n{queries_text}"
         )}]
 
-        raw_evidence: list[dict] = []
+        # Dict-keyed by URL for enrichment across turns
+        raw_ev_by_url: dict[str, dict] = {}
         full_text = ""
 
         while True:
@@ -329,8 +444,13 @@ async def _research_subquestion(
                     if getattr(b, "type", None) == "server_tool_use"
                 )
 
-            # Collect evidence from tool result blocks
-            raw_evidence.extend(_extract_raw_evidence(response.content))
+            # Collect and enrich evidence from all block types
+            new_ev = _extract_evidence_from_blocks(response.content)
+            for url, ev in new_ev.items():
+                if url not in raw_ev_by_url:
+                    raw_ev_by_url[url] = ev
+                else:
+                    _enrich(raw_ev_by_url[url], ev)
 
             # Collect text output
             for block in response.content:
@@ -352,7 +472,7 @@ async def _research_subquestion(
 
         return {
             "subquestion":  subquestion,
-            "raw_evidence": raw_evidence,
+            "raw_evidence": list(raw_ev_by_url.values()),
             "summary":      full_text.strip(),
         }
 
@@ -362,14 +482,28 @@ async def _research_subquestion(
 async def _stream_synthesis(
     system: str,
     user_prompt: str,
+    evidence_text: str | None = None,
     _usage: dict | None = None,
 ):
-    """Async generator: streams synthesis text chunks, no tools."""
+    """
+    Async generator: streams synthesis text chunks, no tools.
+    `evidence_text` is placed in a cached block before the main prompt,
+    so it can be reused across refinement cycles without re-paying full input cost.
+    """
+    if evidence_text:
+        user_content = [
+            {"type": "text", "text": f"Evidence list:\n{evidence_text}",
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": user_prompt},
+        ]
+    else:
+        user_content = user_prompt
+
     async with client.messages.stream(
         model=MODEL_SYNTHESIS,
         max_tokens=8192,
         system=system,
-        messages=[{"role": "user", "content": user_prompt}],
+        messages=[{"role": "user", "content": user_content}],
     ) as stream:
         async for text in stream.text_stream:
             yield text
@@ -489,7 +623,6 @@ async def run(
     # ── Step B: Parallel sub-researchers ─────────────────────────────────
     semaphore = asyncio.Semaphore(RESEARCH_CONCURRENCY)
 
-    # Create tasks (they start running immediately)
     tasks: list[asyncio.Task] = [
         asyncio.create_task(
             _research_subquestion(
@@ -500,7 +633,6 @@ async def run(
         for sp in plan
     ]
 
-    # Emit status for each sub-question as it COMPLETES, with timeout
     subq_results: list[dict] = []
     pending = set(tasks)
     deadline = asyncio.get_event_loop().time() + RESEARCH_TIMEOUT
@@ -527,16 +659,32 @@ async def run(
                 label = result["subquestion"][:55]
                 yield {"__type__": "status", "message": f"found {n_ev} sources: {label}"}
             except Exception:
-                pass  # cancelled or errored sub-question
+                pass
 
     # ── Merge and deduplicate evidence ────────────────────────────────────
-    all_raw: list[dict] = []
+    # Build a URL-keyed dict across all sub-questions for enrichment
+    all_raw_by_url: dict[str, dict] = {}
     for r in subq_results:
-        all_raw.extend(r.get("raw_evidence", []))
+        for ev in r.get("raw_evidence", []):
+            url = ev.get("url", "")
+            if not url:
+                continue
+            if url not in all_raw_by_url:
+                all_raw_by_url[url] = ev
+            else:
+                _enrich(all_raw_by_url[url], ev)
 
-    # Assign new IDs starting after prior evidence; deduplicate new vs prior
-    prior_urls = {e.get("url", "") for e in prior_evidence}
-    fresh_raw = [e for e in all_raw if e.get("url", "") not in prior_urls]
+    # Enrich prior evidence items if the same URL was retrieved again
+    prior_urls: set[str] = set()
+    for e in prior_evidence:
+        url = e.get("url", "")
+        if url:
+            prior_urls.add(url)
+            if url in all_raw_by_url:
+                _enrich(e, all_raw_by_url[url])
+
+    # New evidence: items not in prior cycles
+    fresh_raw = [ev for url, ev in all_raw_by_url.items() if url not in prior_urls]
     new_evidence = _dedup_assign_ids(fresh_raw, start_n=prior_count)
 
     # Full evidence list (prior + new)
@@ -547,11 +695,17 @@ async def run(
         _evidence.extend(new_evidence)
 
     n_domains = _unique_domains(full_evidence)
+    n_with_text = sum(
+        1 for e in full_evidence
+        if e.get("quote") or e.get("retrieved_text_excerpt")
+    )
     yield {"__type__": "status",
-           "message": f"evidence: {len(full_evidence)} sources ({n_domains} domains)"}
+           "message": f"evidence: {len(full_evidence)} sources ({n_domains} domains, {n_with_text} with text)"}
 
     # ── Step C: Synthesis ────────────────────────────────────────────────
-    ev_text = _evidence_list_text(full_evidence)
+    # Select top items for the synthesis prompt
+    synth_evidence = _select_for_synthesis(full_evidence, RESEARCH_EVIDENCE_LIMIT)
+    ev_text = _evidence_list_text(synth_evidence)
 
     subq_block = "\n\n".join(
         f"### {r['subquestion']}\n{r['summary']}"
@@ -586,13 +740,10 @@ Gap-filling queries addressed in this cycle:
 Previous research report (retain all cited findings):
 {prev_research}
 
-Evidence list — cite as [E1], [E2] etc. (new sources have higher IDs):
-{ev_text}
-
-New findings from gap research:
+Research findings by sub-topic (cite using IDs from the evidence list):
 {subq_block}
 
-Produce the cumulative updated research report."""
+Produce the cumulative updated research report. Every bullet MUST cite an [EN] whose excerpt supports the claim."""
     else:
         system = SYSTEM_PROMPT
         user_prompt = f"""Idea: {idea}
@@ -600,17 +751,14 @@ Produce the cumulative updated research report."""
 Requester context:
 {_format_answers(answers)}{refinement_text}
 
-Evidence list — cite as [E1], [E2] etc.:
-{ev_text}
-
-Research findings by sub-topic:
+Research findings by sub-topic (cite using IDs from the evidence list above):
 {subq_block}
 
-Produce the structured research report. Every bullet MUST end with at least one [EN] citation."""
+Produce the structured research report. Every bullet MUST end with at least one [EN] citation whose excerpt supports the claim."""
 
     synth_usage: dict = {}
     full_text = ""
-    async for chunk in _stream_synthesis(system, user_prompt, _usage=synth_usage):
+    async for chunk in _stream_synthesis(system, user_prompt, evidence_text=ev_text, _usage=synth_usage):
         full_text += chunk
         yield chunk
 

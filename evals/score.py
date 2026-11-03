@@ -184,6 +184,13 @@ async def score_result(result: dict) -> dict:
 
     primary_count = sum(1 for u in uniq_urls if is_primary(u))
 
+    # Quote coverage: % of evidence items with a non-empty quote or excerpt
+    items_with_text = sum(
+        1 for e in evidence
+        if e.get("quote") or e.get("retrieved_text_excerpt")
+    )
+    quote_coverage = round(items_with_text / max(len(evidence), 1), 3)
+
     total_v = vcounts.get("total", 0)
     verified_rate = (
         round(vcounts.get("supported", 0) / total_v, 3) if total_v else None
@@ -205,6 +212,7 @@ async def score_result(result: dict) -> dict:
         "primary_source_ratio":  round(primary_count / max(len(uniq_urls), 1), 3),
         "numeric_claims_cited":  round(num_cited / max(len(numeric), 1), 3),
         "verified_claim_rate":   verified_rate,
+        "quote_coverage":        quote_coverage,
         "wall_seconds":          timing.get("wall_seconds", 0),
         "total_tokens":          (
             timing.get("total_input_tokens",  0) +
@@ -254,10 +262,10 @@ def _print_summary(label: str, scores: list[dict]) -> None:
     print(f"\n{'═'*70}")
     print(f"  SCORES — {label}  ({len(ok)}/{len(scores)} succeeded)")
     print(f"  {'ID':<25} {'claims':>6} {'cite%':>6} {'srcs':>5} {'doms':>5} "
-          f"{'prim%':>6} {'num%':>6} {'ver%':>6} {'spec':>5} {'grnd':>5} "
+          f"{'prim%':>6} {'num%':>6} {'ver%':>6} {'qtxt%':>6} {'spec':>5} {'grnd':>5} "
           f"{'comp':>5} {'decn':>5} {'tok':>7}")
     print(f"  {'-'*25} {'-'*6} {'-'*6} {'-'*5} {'-'*5} "
-          f"{'-'*6} {'-'*6} {'-'*6} {'-'*5} {'-'*5} {'-'*5} {'-'*5} {'-'*7}")
+          f"{'-'*6} {'-'*6} {'-'*6} {'-'*6} {'-'*5} {'-'*5} {'-'*5} {'-'*5} {'-'*7}")
     for s in scores:
         j = s.get("judge", {})
         print(
@@ -265,6 +273,7 @@ def _print_summary(label: str, scores: list[dict]) -> None:
             f"{s['citation_rate']:>6.1%} {s['unique_sources']:>5} {s['unique_domains']:>5} "
             f"{s['primary_source_ratio']:>6.1%} {s['numeric_claims_cited']:>6.1%} "
             f"{_fmt(s['verified_claim_rate']):>6} "
+            f"{_fmt(s.get('quote_coverage')):>6} "
             f"{j.get('specificity','—'):>5} {j.get('factual_grounding','—'):>5} "
             f"{j.get('completeness','—'):>5} {j.get('decision_usefulness','—'):>5} "
             f"{s['total_tokens']:>7}"
@@ -282,6 +291,7 @@ def _print_summary(label: str, scores: list[dict]) -> None:
               f"{_mean('unique_domains'):>5.1f} "
               f"{_mean('primary_source_ratio'):>6.1%} {_mean('numeric_claims_cited'):>6.1%} "
               f"{_fmt(_mean('verified_claim_rate')):>6} "
+              f"{_fmt(_mean('quote_coverage')):>6} "
               f"{_mean('judge','specificity') or 0:>5.1f} "
               f"{_mean('judge','factual_grounding') or 0:>5.1f} "
               f"{_mean('judge','completeness') or 0:>5.1f} "

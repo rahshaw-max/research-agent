@@ -123,7 +123,11 @@ def _top_sources(evidence: list[dict], researcher_text: str, n: int = 15) -> lis
 
     scored.sort(key=lambda x: -x[0])
     return [
-        {"title": e.get("title", ""), "url": e.get("url", "")}
+        {
+            "title":       e.get("title",       ""),
+            "url":         e.get("url",         ""),
+            "source_type": e.get("source_type", ""),
+        }
         for _, e in scored[:n]
     ]
 

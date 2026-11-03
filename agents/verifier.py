@@ -48,8 +48,15 @@ _VERIFY_TOOL = {
                         "index":   {"type": "integer", "description": "1-based claim index in the batch"},
                         "verdict": {"type": "string", "enum": ["supported", "partial", "unsupported"]},
                         "reason":  {"type": "string", "description": "One sentence explanation"},
+                        "supporting_quote": {
+                            "type": "string",
+                            "description": (
+                                "Short verbatim passage from the evidence text that supports or refutes "
+                                "the claim. Empty string for unsupported verdicts."
+                            ),
+                        },
                     },
-                    "required": ["index", "verdict", "reason"],
+                    "required": ["index", "verdict", "reason", "supporting_quote"],
                 },
             }
         },
@@ -86,16 +93,18 @@ _REPAIR_TOOL = {
 }
 
 _VERIFY_SYSTEM = """\
-You are a strict fact-checking agent verifying whether cited sources plausibly support specific claims.
+You are a strict fact-checking agent. For each claim you are given the cited evidence items with their actual retrieved text (quote or excerpt).
 
-Verdicts:
-- "supported": the cited source type and title are exactly the right match for this specific claim,
-  and the specifics (numbers, names, dates) are consistent with what such a source would report.
-- "partial": the source is topically related but the claim overstates, adds specificity the source
-  cannot confirm, or mixes source facts with assumptions.
-- "unsupported": the source appears unrelated, OR the claim contains invented statistics, names,
-  or figures the cited source would not plausibly contain.
+Verdicts — judge against the evidence TEXT shown, not just the title/URL:
+- "supported": the evidence text directly states or clearly implies the claim; specific numbers,
+  names, and dates in the claim match the text.
+- "partial": the evidence text is topically related but the claim adds specificity not present
+  in the text, or mixes facts from different sources without distinguishing them.
+- "unsupported": the evidence text contradicts the claim, is absent/empty, or the cited [E#]
+  does not appear in the evidence list at all.
 
+For each verdict provide a `supporting_quote`: a short verbatim passage from the evidence text
+that best justifies your verdict. Leave it empty for unsupported verdicts.
 When in doubt between "supported" and "partial", choose "partial". Be strict about specific numbers."""
 
 _REPAIR_SYSTEM = """\
@@ -134,7 +143,9 @@ def _extract_claims(report: str) -> list[dict]:
 
 def _build_evidence_map(evidence: list[dict] | None, report: str) -> dict[int, dict]:
     """
-    Build {int_id: {title, url}} from the passed-in evidence list.
+    Build {int_id: {title, url, text}} from the passed-in evidence list.
+    `text` is the quote or retrieved_text_excerpt (up to 500 chars) for use in
+    the verification prompt so the judge sees actual source content.
     Falls back to parsing ## Sources if no evidence list is provided.
     """
     ev_map: dict[int, dict] = {}
@@ -143,14 +154,19 @@ def _build_evidence_map(evidence: list[dict] | None, report: str) -> dict[int, d
             raw_id = e.get("id", "")
             m = re.match(r"E?(\d+)$", str(raw_id))
             if m:
+                text = (
+                    e.get("quote") or
+                    (e.get("retrieved_text_excerpt", "")[:500])
+                )
                 ev_map[int(m.group(1))] = {
                     "title": e.get("title", ""),
                     "url":   e.get("url",   ""),
+                    "text":  text,
                 }
         if ev_map:
             return ev_map
 
-    # Fallback: parse ## Sources section
+    # Fallback: parse ## Sources section (no text available)
     in_sources = False
     for line in report.splitlines():
         s = line.strip()
@@ -166,6 +182,7 @@ def _build_evidence_map(evidence: list[dict] | None, report: str) -> dict[int, d
                 ev_map[n] = {
                     "title": m.group(2).strip(),
                     "url":   m.group(3).strip().rstrip("),. "),
+                    "text":  "",
                 }
     return ev_map
 
@@ -184,13 +201,18 @@ async def _verify_batch(
         for cn in item["citations"]:
             ev = ev_map.get(cn)
             if ev:
-                src_parts.append(f"[E{cn}] {ev['title']} — {ev['url']}")
+                src_line = f"[E{cn}] {ev['title']} — {ev['url']}"
+                if ev.get("text"):
+                    src_line += f'\n       Evidence text: "{ev["text"][:300]}"'
+                else:
+                    src_line += "\n       Evidence text: (not available — judge on title/URL only)"
+                src_parts.append(src_line)
             else:
-                src_parts.append(f"[E{cn}] (not in evidence list)")
+                src_parts.append(f"[E{cn}] NOT IN EVIDENCE LIST → automatically unsupported")
         lines.append(
             f"Claim {i}:\n"
             f"  Text: \"{item['text']}\"\n"
-            f"  Cites: {'; '.join(src_parts) or '(none)'}"
+            f"  Cited sources:\n    " + "\n    ".join(src_parts or ["(none)"])
         )
 
     response = await client.messages.create(
@@ -212,9 +234,10 @@ async def _verify_batch(
                 idx = v.get("index", 1) - 1
                 if 0 <= idx < len(batch):
                     results.append({
-                        "claim_text": batch[idx]["text"],
-                        "verdict":    v.get("verdict", "unsupported"),
-                        "reason":     v.get("reason",  ""),
+                        "claim_text":       batch[idx]["text"],
+                        "verdict":          v.get("verdict",          "unsupported"),
+                        "reason":           v.get("reason",           ""),
+                        "supporting_quote": v.get("supporting_quote", ""),
                     })
     return results
 
@@ -233,10 +256,14 @@ async def _repair_fast(
     if not unsupported:
         return {}
 
-    ev_lines = "\n".join(
-        f"[{e['id']}] {e['title']} — {e['url']}"
-        for e in evidence
-    )
+    ev_line_parts = []
+    for e in evidence:
+        line = f"[{e['id']}] {e['title']} — {e['url']}"
+        text = e.get("quote") or (e.get("retrieved_text_excerpt", "")[:200])
+        if text:
+            line += f'\n    Text: "{text}"'
+        ev_line_parts.append(line)
+    ev_lines = "\n".join(ev_line_parts)
     claims_text = "\n".join(
         f"{i + 1}. {c['claim_text']}" for i, c in enumerate(unsupported)
     )
