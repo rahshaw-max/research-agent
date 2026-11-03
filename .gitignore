@@ -6,3 +6,7 @@ __pycache__/
 output/
 snapshots/
 .claude/
+evals/runs/
+runs/
+.DS_Store
+sessions.db

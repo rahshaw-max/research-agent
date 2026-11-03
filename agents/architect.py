@@ -1,11 +1,5 @@
-import anthropic
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from agents.config import MODEL_SYNTHESIS
-
-client = anthropic.AsyncAnthropic()
+from agents.llm import client
 
 _SECTIONS = """
 ## System Overview

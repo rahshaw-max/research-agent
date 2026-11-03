@@ -16,17 +16,14 @@ import os
 import re
 
 import anthropic
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from agents.config import MODEL_FAST
+from agents.llm import client
+
 BATCH_SIZE            = int(os.getenv("VERIFIER_BATCH_SIZE", "12"))
 VERIFIER_ALLOW_SEARCH = os.getenv("VERIFIER_ALLOW_SEARCH", "false").lower() == "true"
 _MAX_EXTRA_SEARCHES   = 2
 _SEARCH_TIMEOUT       = 60.0
-
-client = anthropic.AsyncAnthropic()
 
 _WS_TOOLS = [
     {"type": "web_search_20250305", "name": "web_search", "max_uses": _MAX_EXTRA_SEARCHES},
