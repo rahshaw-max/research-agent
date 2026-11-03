@@ -120,6 +120,13 @@
         <button class="btn-secondary restart-btn" onclick="restart()">Start New Research</button>
       </div>
 
+      <!-- Interrupted session banner -->
+      <div id="interrupted-banner" class="interrupted-banner hidden">
+        <strong>Session interrupted.</strong>
+        <span id="interrupted-msg">The server restarted mid-run. Your research is saved up to the last review gate.</span>
+        <button class="btn-secondary" onclick="dismissInterrupted()" style="margin-top:8px">Start New Research</button>
+      </div>
+
       <!-- Global error banner -->
       <div id="global-error" class="global-error hidden">
         <strong>Error:</strong> <span id="global-error-msg"></span>

@@ -8,6 +8,81 @@ const state = {
   depth: 'standard',
 };
 
+/* ── Session persistence ── */
+const SESSION_KEY = 'researchAgentSessionId';
+
+function saveSessionId(id) {
+  try { localStorage.setItem(SESSION_KEY, id); } catch (_) {}
+}
+
+function loadSessionId() {
+  // URL param takes priority, then localStorage
+  const params = new URLSearchParams(location.search);
+  return params.get('session') || localStorage.getItem(SESSION_KEY) || null;
+}
+
+function clearSessionId() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
+  // Remove ?session= from URL without reload
+  const url = new URL(location.href);
+  url.searchParams.delete('session');
+  history.replaceState({}, '', url.toString());
+}
+
+async function tryReconnect() {
+  const sessionId = loadSessionId();
+  if (!sessionId) return;
+
+  try {
+    const res = await fetch(`/api/session/${sessionId}`);
+    if (!res.ok) { clearSessionId(); return; }
+    const data = await res.json();
+
+    if (data.status === 'done' && data.pptx_path) {
+      // Session completed — show download
+      state.sessionId = sessionId;
+      document.getElementById('download-link').href = `/api/download/${sessionId}`;
+      setPhase('DONE');
+      return;
+    }
+
+    if (data.status === 'awaiting_review') {
+      // Reconnect to the review gate
+      state.sessionId = sessionId;
+      state.cycle = data.cycle_count || 1;
+      document.getElementById('running-idea-display').textContent = data.idea || '';
+      updateCycleIndicator(state.cycle);
+      setPhase('RUNNING');
+      connectWebSocket();  // server will send awaiting_review event on WS connect
+      return;
+    }
+
+    if (data.status === 'interrupted') {
+      showInterruptedBanner(data.idea);
+      return;
+    }
+  } catch (_) {
+    clearSessionId();
+  }
+}
+
+function showInterruptedBanner(idea) {
+  const banner = document.getElementById('interrupted-banner');
+  const msg = document.getElementById('interrupted-msg');
+  if (idea) {
+    msg.textContent = `Your session "${idea.substring(0, 60)}…" was interrupted when the server restarted. You can start a new research below.`;
+  }
+  banner.classList.remove('hidden');
+}
+
+function dismissInterrupted() {
+  clearSessionId();
+  document.getElementById('interrupted-banner').classList.add('hidden');
+}
+
+// Check on load
+document.addEventListener('DOMContentLoaded', () => { tryReconnect(); });
+
 const CYCLE_AGENTS = ['researcher', 'interrogator'];
 
 /* ── Phase management ── */
@@ -47,6 +122,7 @@ async function submitIdea() {
     });
     const data = await res.json();
     state.sessionId = data.session_id;
+    saveSessionId(data.session_id);
     state.questions = data.questions;
     renderQuestions(data.questions);
     setPhase('CLARIFYING');
@@ -565,6 +641,7 @@ function hideError(id) {
 
 /* ── Restart ── */
 function restart() {
+  clearSessionId();
   state.phase = 'INPUT';
   state.sessionId = null;
   state.questions = [];

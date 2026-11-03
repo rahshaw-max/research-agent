@@ -1,13 +1,12 @@
 import asyncio
-import json
 import logging
 import os
 import time
-import traceback
 from contextlib import asynccontextmanager
 from fastapi import WebSocket
 from agents import researcher, architect, critic, auditor, interrogator, verifier
 from agents.errors import StageFailed
+from pipeline.artifacts import timing_path, write_timing, log_error
 from pptx_builder import builder
 
 log = logging.getLogger(__name__)
@@ -36,26 +35,6 @@ def _build_idea_with_refinements(session: dict) -> str:
     return "\n".join(parts)
 
 
-def _timing_log_path(session_id: str) -> str:
-    run_dir = os.path.join("runs", session_id)
-    os.makedirs(run_dir, exist_ok=True)
-    return os.path.join(run_dir, "timing.jsonl")
-
-
-def _write_timing(log_path: str, record: dict) -> None:
-    with open(log_path, "a") as f:
-        f.write(json.dumps(record) + "\n")
-
-
-def _log_error(session_id: str, exc: Exception) -> None:
-    """Append full traceback to runs/<session_id>/errors.log."""
-    run_dir = os.path.join("runs", session_id)
-    os.makedirs(run_dir, exist_ok=True)
-    path = os.path.join(run_dir, "errors.log")
-    tb = traceback.format_exc()
-    with open(path, "a") as f:
-        f.write(f"\n{'=' * 60}\n{tb}\n")
-    log.error("Stage error logged to %s: %s", path, exc)
 
 
 def _validate(stage: str, output, min_chars: int = 0) -> None:
@@ -96,7 +75,7 @@ async def _stage_timer(
             "cache_read_tokens":    usage.get("cache_read_tokens", 0),
             "cache_created_tokens": usage.get("cache_created_tokens", 0),
         }
-        _write_timing(log_path, record)
+        write_timing(log_path, record)
         if ws is not None:
             try:
                 await ws.send_json({"event": "stage_timing", "agent": stage, "data": record})
@@ -143,7 +122,7 @@ async def _await_retry_or_abort(
     exc: StageFailed, session_id: str, sessions: dict, ws: WebSocket, log_path: str
 ) -> None:
     """Log, emit stage_failed, then block on hitl_queue for retry_stage or abort."""
-    _log_error(session_id, exc)
+    log_error(session_id, exc)
     try:
         await ws.send_json({
             "event": "stage_failed",
@@ -158,7 +137,18 @@ async def _await_retry_or_abort(
     # action == "retry_stage": caller should loop and retry
 
 
-async def run_pipeline(session_id: str, sessions: dict) -> None:
+async def _save_phase(session_id: str, store, session: dict, phase: str) -> None:
+    """Persist session state to store at a phase boundary (no-op if store is None)."""
+    if store is None:
+        return
+    session["phase"] = phase
+    try:
+        await store.save(session_id, session)
+    except Exception as exc:
+        log.warning("store.save failed at phase %s: %s", phase, exc)
+
+
+async def run_pipeline(session_id: str, sessions: dict, *, store=None, resume_phase: str = "start") -> None:
     session = sessions[session_id]
 
     try:
@@ -167,7 +157,7 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
         return
 
     ws: WebSocket = session["ws"]
-    log_path = _timing_log_path(session_id)
+    log_path = timing_path(session_id)
     all_timing: list[dict] = []
 
     depth_key = session.get("depth", _DEFAULT_DEPTH)
@@ -175,14 +165,46 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
     max_cycles  = depth["max_cycles"]
     arch_mode   = depth["arch_mode"]
 
-    final_research: str | None = None
-    prev_coverage_score: float | None = None
-    consecutive_small_improvements: int = 0
-    last_gap_report: dict = {}
+    # Restore pipeline local state (populated on resume, defaults for fresh runs)
+    final_research: str | None                = session.get("final_research")
+    prev_coverage_score: float | None         = session.get("prev_coverage_score")
+    consecutive_small_improvements: int       = session.get("consecutive_small_improvements", 0)
+    last_gap_report: dict                     = session.get("last_gap_report") or {}
+
+    # ── Resume at awaiting_review: skip research, re-send gate payload ────
+    if resume_phase == "awaiting_review":
+        ard = session.get("awaiting_review_data") or {}
+        if ard:
+            try:
+                await ws.send_json({"event": "awaiting_review", "agent": "critic", "data": ard})
+            except Exception:
+                pass
+        decision = await session["hitl_queue"].get()
+        # Process decision below (fall through to Phase 2 or refine loop)
+        if decision["action"] == "refine" and session["cycle_count"] < max_cycles:
+            session["refinements"].append({
+                "refined_prompt": decision.get("refined_prompt", ""),
+                "additional_context": decision.get("additional_context", ""),
+                "interrogator_answers": decision.get("interrogator_answers", {}),
+            })
+            session["cycle_count"] += 1
+            try:
+                await ws.send_json({
+                    "event": "cycle_start", "agent": None,
+                    "data": {"cycle": session["cycle_count"]},
+                })
+            except Exception:
+                pass
+            # Fall through into the cycle loop below at the new cycle count
+            resume_phase = "start"  # continue with full research loop
+        else:
+            # Approved (or max cycles) — jump straight to Phase 2
+            resume_phase = "_phase2"
 
     try:
         # ── CYCLE LOOP ────────────────────────────────────────────────────────
-        while session["cycle_count"] <= max_cycles:
+        if resume_phase != "_phase2":
+          while session["cycle_count"] <= max_cycles:
             cycle = session["cycle_count"]
             idea = _build_idea_with_refinements(session)
             latest_refinement = session["refinements"][-1] if session["refinements"] else None
@@ -238,7 +260,7 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
                     evidence=cycle_evidence, _usage=vu,
                 )
             except Exception as exc:
-                _log_error(session_id, exc)
+                log_error(session_id, exc)
                 verify_result = {
                     "report": final_research,
                     "counts": {"total": 0, "supported": 0, "partial": 0,
@@ -288,7 +310,7 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
             except StageFailed:
                 raise
             except Exception as exc:
-                _log_error(session_id, exc)
+                log_error(session_id, exc)
                 try:
                     await ws.send_json({"event": "agent_status", "agent": "critic", "data": {
                         "message": f"WARNING: critique error — using empty gap report ({type(exc).__name__})"
@@ -305,7 +327,7 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
             # Record timing separately
             for stage, u, secs in [("verifier", vu, t_verifier), ("research_critique", rcu, t_critique)]:
                 record = {"stage": stage, "cycle": cycle, "seconds": secs, **u}
-                _write_timing(log_path, record)
+                write_timing(log_path, record)
                 all_timing.append(record)
                 try:
                     await ws.send_json({"event": "stage_timing", "agent": stage, "data": record})
@@ -368,7 +390,7 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
                     if not questions:
                         raise ValueError("interrogator returned empty list")
                 except Exception as exc:
-                    _log_error(session_id, exc)
+                    log_error(session_id, exc)
                     questions = _DEFAULT_QUESTIONS
                     try:
                         await ws.send_json({"event": "agent_status", "agent": "interrogator", "data": {
@@ -386,23 +408,34 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
                     pass
             all_timing.append({"stage": "interrogator", "cycle": cycle, **iu})
 
+            # ── Persist state before HITL gate ───────────────────────────────
+            _ard = {
+                "critique": "",
+                "questions": questions,
+                "cycle": cycle,
+                "gap_report": last_gap_report,
+                "coverage_score": coverage_score,
+                "auto_approve_recommended": auto_approve_recommended,
+                "recommendation_reason": recommendation_reason,
+                "per_sub_question_scores": last_gap_report.get("sub_question_scores", []),
+                "verification_counts": vcounts,
+            }
+            session.update({
+                "final_research": final_research,
+                "last_gap_report": last_gap_report,
+                "prev_coverage_score": prev_coverage_score,
+                "consecutive_small_improvements": consecutive_small_improvements,
+                "vcounts": vcounts,
+                "recommendation_reason": recommendation_reason,
+                "auto_approve_recommended": auto_approve_recommended,
+                "per_sub_question_scores": last_gap_report.get("sub_question_scores", []),
+                "awaiting_review_data": _ard,
+            })
+            await _save_phase(session_id, store, session, "awaiting_review")
+
             # ── HITL gate ────────────────────────────────────────────────────
             try:
-                await ws.send_json({
-                    "event": "awaiting_review",
-                    "agent": "critic",
-                    "data": {
-                        "critique": "",
-                        "questions": questions,
-                        "cycle": cycle,
-                        "gap_report": last_gap_report,
-                        "coverage_score": coverage_score,
-                        "auto_approve_recommended": auto_approve_recommended,
-                        "recommendation_reason": recommendation_reason,
-                        "per_sub_question_scores": last_gap_report.get("sub_question_scores", []),
-                        "verification_counts": vcounts,
-                    },
-                })
+                await ws.send_json({"event": "awaiting_review", "agent": "critic", "data": _ard})
             except Exception:
                 pass
 
@@ -428,6 +461,7 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
             break  # approved or max cycles reached
 
         # ── PHASE 2: Architecture ─────────────────────────────────────────────
+        await _save_phase(session_id, store, session, "architecting")
         idea = _build_idea_with_refinements(session)
 
         if arch_mode == "lite":
@@ -533,6 +567,7 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
             "architect_v2": final_arch_v2,
         }
         session["pptx_path"] = pptx_path
+        await _save_phase(session_id, store, session, "done")
 
         total_in   = sum(r.get("input_tokens",  0) for r in all_timing)
         total_out  = sum(r.get("output_tokens", 0) for r in all_timing)
@@ -560,7 +595,8 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
             pass
 
     except Exception as exc:
-        _log_error(session_id, exc)
+        log_error(session_id, exc)
+        await _save_phase(session_id, store, session, "failed")
         try:
             await ws.send_json({
                 "event": "error",

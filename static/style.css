@@ -566,3 +566,17 @@ textarea:focus { border-color: var(--green); }
 .timing-total td { background: #f7f7f7; }
 
 .hidden { display: none !important; }
+
+
+/* ── Interrupted session banner ── */
+.interrupted-banner {
+  background: #fff8e1;
+  border: 1px solid #f0c040;
+  border-left: 4px solid #f0c040;
+  border-radius: var(--card-radius);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: #7a5c00;
+}
+.interrupted-banner strong { color: #5a3e00; }

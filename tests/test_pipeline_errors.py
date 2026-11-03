@@ -188,7 +188,7 @@ async def test_retry_stage_reruns_stage():
     sessions = {"sid": {"hitl_queue": asyncio.Queue()}}
     await sessions["sid"]["hitl_queue"].put({"action": "retry_stage"})
 
-    with patch("pipeline.orchestrator._log_error"):
+    with patch("pipeline.orchestrator.log_error"):
         # Should return without raising (caller can loop)
         await _await_retry_or_abort(exc, "sid", sessions, ws, "runs/sid/errors.log")
 
@@ -211,7 +211,7 @@ async def test_abort_reraises_exception():
     sessions = {"sid": {"hitl_queue": asyncio.Queue()}}
     await sessions["sid"]["hitl_queue"].put({"action": "abort"})
 
-    with patch("pipeline.orchestrator._log_error"):
+    with patch("pipeline.orchestrator.log_error"):
         with pytest.raises(StageFailed) as exc_info:
             await _await_retry_or_abort(exc, "sid", sessions, ws, "runs/sid/errors.log")
 
