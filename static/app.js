@@ -132,6 +132,7 @@ function connectWebSocket() {
       case 'cycle_start':    handleCycleStart(msg.data.cycle);                     break;
       case 'pipeline_done':  handlePipelineDone(msg.data);                          break;
       case 'stage_timing':   handleStageTiming(msg.data);                          break;
+      case 'stage_failed':   handleStageFailed(msg.data);                          break;
       case 'error':          handleGlobalError(msg.data.message);                  break;
     }
   };
@@ -468,6 +469,42 @@ function handleGlobalError(message) {
     el.classList.remove('active');
     el.classList.add('hidden');
   });
+}
+
+/* ── Stage-failed gate ── */
+function handleStageFailed(data) {
+  const gate = document.getElementById('stage-failed-gate');
+  if (!gate) return;
+  document.getElementById('stage-failed-stage').textContent = data.stage || 'unknown';
+  document.getElementById('stage-failed-reason').textContent = data.reason || '';
+  gate.classList.remove('hidden');
+}
+
+async function retryStage() {
+  const gate = document.getElementById('stage-failed-gate');
+  if (gate) gate.classList.add('hidden');
+  try {
+    await fetch('/api/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: state.sessionId, action: 'retry_stage' }),
+    });
+  } catch (err) {
+    handleGlobalError('Failed to send retry command.');
+  }
+}
+
+async function abortPipeline() {
+  const gate = document.getElementById('stage-failed-gate');
+  if (gate) gate.classList.add('hidden');
+  try {
+    await fetch('/api/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: state.sessionId, action: 'abort' }),
+    });
+  } catch (err) { /* best-effort */ }
+  handleGlobalError('Pipeline aborted by user.');
 }
 
 function showError(id, msg) {

@@ -126,6 +126,16 @@
         <button class="btn-secondary" onclick="restart()" style="margin-top:12px">Start Over</button>
       </div>
 
+      <!-- Stage-failed gate -->
+      <div id="stage-failed-gate" class="stage-failed-gate hidden">
+        <p><strong>Stage failed:</strong> <code id="stage-failed-stage"></code></p>
+        <p class="stage-failed-reason" id="stage-failed-reason"></p>
+        <div class="stage-failed-actions">
+          <button class="btn-primary" onclick="retryStage()">Retry Stage</button>
+          <button class="btn-secondary" onclick="abortPipeline()">Abort</button>
+        </div>
+      </div>
+
     </section>
 
     <!-- RIGHT PANEL -->

@@ -274,6 +274,18 @@ textarea:focus { border-color: var(--green); }
   gap: 6px;
 }
 
+.stage-failed-gate {
+  background: #FEF9E7;
+  border: 1px solid #F0B429;
+  border-radius: 6px;
+  padding: 14px;
+  font-size: 13px;
+  margin-top: 12px;
+}
+.stage-failed-gate p { margin: 0 0 6px; }
+.stage-failed-reason { color: #555; }
+.stage-failed-actions { display: flex; gap: 8px; margin-top: 10px; }
+
 /* ── Right panel ── */
 .right-panel {
   flex: 1;

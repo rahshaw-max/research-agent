@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Type, TypeVar
 
 import anthropic
+import httpx2 as httpx
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
@@ -11,7 +12,12 @@ load_dotenv()
 
 from agents.config import MODEL_FAST, MODEL_SYNTHESIS  # re-export
 
-client = anthropic.AsyncAnthropic()
+# Explicit timeouts and SDK-level retry budget (handles 429 / 5xx automatically).
+# Application-level retries in researcher.py add on top of this for the inner loop.
+client = anthropic.AsyncAnthropic(
+    max_retries=4,
+    timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0),
+)
 
 T = TypeVar("T", bound=BaseModel)
 
