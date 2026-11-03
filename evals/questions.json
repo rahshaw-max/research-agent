@@ -1,0 +1,122 @@
+[
+  {
+    "id": "pa_automation",
+    "idea": "Prior authorization automation with AI for health insurers",
+    "answers": {
+      "audience": "Health plan medical directors and VP of Clinical Operations",
+      "goal": "Feasibility study for replacing manual PA review with AI-assisted decisioning",
+      "constraints": "Must comply with CMS interoperability rules and state PA timeliness mandates",
+      "focus_areas": "Accuracy vs human review, liability, vendor landscape, integration with utilization management systems"
+    }
+  },
+  {
+    "id": "semantic_layer_agents",
+    "idea": "Semantic layer for agentic AI in healthcare payer operations",
+    "answers": {
+      "audience": "Chief Data Officers and enterprise architects at regional health plans",
+      "goal": "Architecture design for enabling LLM agents to query claims, eligibility, and clinical data safely",
+      "constraints": "HIPAA compliance, existing EDW on Snowflake, heterogeneous source systems (FACETS, QNXT)",
+      "focus_areas": "Semantic layer vendors (AtScale, Cube, dbt Semantic Layer), governance, query federation, hallucination mitigation"
+    }
+  },
+  {
+    "id": "graphrag_claims",
+    "idea": "GraphRAG for insurance claims processing and fraud detection",
+    "answers": {
+      "audience": "Special Investigations Unit directors and data science leads at health plans",
+      "goal": "Evaluate whether graph-augmented retrieval materially improves fraud ring detection over vector-only RAG",
+      "constraints": "Must explain decisions to regulators; existing Neo4j investment",
+      "focus_areas": "GraphRAG vs standard RAG accuracy benchmarks, provider network analysis, claim linkage, real-world deployments"
+    }
+  },
+  {
+    "id": "utilization_mgmt",
+    "idea": "Utilization management modernization with AI for health plans",
+    "answers": {
+      "audience": "VP of Utilization Management and CMO at a regional Blue plan",
+      "goal": "Roadmap for AI-augmented UM that reduces administrative burden while maintaining quality outcomes",
+      "constraints": "URAC accreditation requirements, physician advisor shortage, concurrent review volumes",
+      "focus_areas": "Clinical criteria engines (InterQual, MCG), AI-assisted peer-to-peer, predictive inappropriate-utilization scoring"
+    }
+  },
+  {
+    "id": "claims_fraud",
+    "idea": "AI-powered fraud, waste and abuse detection for medical claims at scale",
+    "answers": {
+      "audience": "SIU leaders and compliance officers at national health insurers",
+      "goal": "Benchmark current AI FWA capabilities and identify gaps versus best-in-class",
+      "constraints": "Must not produce disparate impact across provider demographics; OIG exclusion list integration required",
+      "focus_areas": "Anomaly detection models, network analysis, false positive rates, CMS FWA requirements, vendor comparison (Cotiviti, Optum, Verscend)"
+    }
+  },
+  {
+    "id": "member_360",
+    "idea": "Member 360 data platform for health plans enabling personalized care management",
+    "answers": {
+      "audience": "Chief Data Officer and VP Care Management at a regional health plan (2M members)",
+      "goal": "Architecture and vendor assessment for unified member data platform",
+      "constraints": "HIPAA, 42 CFR Part 2 for SUD data, interoperability with 30+ data sources",
+      "focus_areas": "Real-time eligibility, SDoH integration, care gap identification, cloud data platform options (Snowflake, Databricks, Azure)"
+    }
+  },
+  {
+    "id": "clinical_doc_ai",
+    "idea": "AI for clinical documentation review in prior authorization workflows",
+    "answers": {
+      "audience": "Medical Directors and Clinical Operations leaders at health plans",
+      "goal": "Assess NLP/LLM capability for auto-extracting clinical criteria from submitted records to accelerate PA decisions",
+      "constraints": "FDA SaMD classification risk, physician liability, state prompt-pay laws",
+      "focus_areas": "Accuracy on unstructured clinical notes, ICD-10/CPT extraction, integration with PA platforms (Cohere Health, Olive, Availity)"
+    }
+  },
+  {
+    "id": "eligibility_ai",
+    "idea": "Real-time eligibility and benefits verification with AI for providers",
+    "answers": {
+      "audience": "Revenue cycle directors at large hospital systems and payer IT leaders",
+      "goal": "Reduce claim denials due to eligibility errors through predictive and real-time verification",
+      "constraints": "X12 270/271 transaction standards, CAQH CORE rules, Epic integration requirement",
+      "focus_areas": "Real-time API vs batch, error prediction models, denial root cause analytics, clearinghouse vendors"
+    }
+  },
+  {
+    "id": "appeals_ai",
+    "idea": "AI-driven appeals and grievances automation for health insurers",
+    "answers": {
+      "audience": "VP Member Experience and Compliance Officers at managed care organizations",
+      "goal": "Reduce appeal cycle time and administrative cost while improving first-level resolution rates",
+      "constraints": "CMS and state regulatory deadlines (72-hour expedited), NCQA standards, member adverse event risk",
+      "focus_areas": "NLP for appeal classification, auto-routing, decision support, CMS audit readiness, ACA QHP requirements"
+    }
+  },
+  {
+    "id": "invoice_smb",
+    "idea": "AI-powered invoice processing for SMBs",
+    "answers": {
+      "audience": "CFOs and finance operations managers at small businesses (10-200 employees)",
+      "goal": "Feasibility and vendor comparison for replacing manual AP with AI automation",
+      "constraints": "QuickBooks/Xero integration required, under $500/month budget, minimal IT overhead",
+      "focus_areas": "OCR accuracy, ERP integration, pricing models, leading vendors (Bill.com, Stampli, Rossum)"
+    }
+  },
+  {
+    "id": "code_review_ai",
+    "idea": "Autonomous code review AI platform for software engineering teams",
+    "answers": {
+      "audience": "VPs Engineering and platform leads at mid-size SaaS companies",
+      "goal": "Evaluate AI code review tools against human review quality and developer velocity impact",
+      "constraints": "Must support GitHub and GitLab, security scanning, SOC 2 compliant hosting",
+      "focus_areas": "Bug detection rates, false positive rates, PR cycle time, vendor comparison (CodeRabbit, Qodo, GitHub Copilot)"
+    }
+  },
+  {
+    "id": "supply_chain_risk",
+    "idea": "Supply chain risk intelligence platform with AI for manufacturing companies",
+    "answers": {
+      "audience": "Chief Supply Chain Officers and procurement VPs at Fortune 500 manufacturers",
+      "goal": "Identify best-of-breed AI platforms for proactive supplier risk monitoring and disruption prediction",
+      "constraints": "Integration with SAP Ariba and Oracle SCM, ESG reporting requirements, 50,000+ supplier base",
+      "focus_areas": "Geopolitical risk signals, financial health scoring, sub-tier visibility, leading vendors (Resilinc, Everstream, Riskmethods)"
+    }
+  }
+]
