@@ -93,7 +93,7 @@ async def run_research_critique(idea: str, research: str, answers: dict, _usage:
     answers_text = _format_answers(answers)
     response = await client.messages.create(
         model=MODEL_FAST,
-        max_tokens=2048,
+        max_tokens=4096,
         system=[{"type": "text", "text": _RESEARCH_CRITIQUE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": [
             {"type": "text", "text": research, "cache_control": {"type": "ephemeral"}},

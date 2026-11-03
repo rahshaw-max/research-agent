@@ -156,11 +156,21 @@ async def run_pipeline(session_id: str, sessions: dict) -> None:
             vu: dict = {}
             t0_parallel = time.perf_counter()
 
+            try:
+                await ws.send_json({"event": "agent_start", "agent": "critic", "data": {}})
+            except Exception:
+                pass
+
             [last_gap_report, verify_result] = await asyncio.gather(
                 critic.run_research_critique(idea, final_research, session["answers"], _usage=rcu),
                 verifier.run(final_research, idea, session["answers"], evidence=cycle_evidence, _usage=vu),
             )
             t_parallel = round(time.perf_counter() - t0_parallel, 2)
+
+            try:
+                await ws.send_json({"event": "agent_complete", "agent": "critic", "data": {}})
+            except Exception:
+                pass
 
             # Record both with shared wall time (they overlapped)
             for stage, u in [("research_critique", rcu), ("verifier", vu)]:
